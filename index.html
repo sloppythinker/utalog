@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="うたログ">
+<meta name="theme-color" content="#12101c">
+<title>うたログ - カラオケレパートリー</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-180.png">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="app-header">
+  <h1 class="app-title"><span class="logo-mic">🎤</span>うたログ</h1>
+  <button id="btnSettings" class="icon-btn" aria-label="設定">⚙️</button>
+</header>
+
+<div class="search-area">
+  <div class="search-box">
+    <span class="search-icon">🔍</span>
+    <input type="search" id="searchInput" placeholder="曲名・歌手名で検索" autocomplete="off">
+    <button id="btnClearSearch" class="clear-btn hidden" aria-label="クリア">✕</button>
+  </div>
+  <div class="filter-row">
+    <div id="tagFilter" class="tag-scroll"></div>
+    <select id="sortSelect" class="sort-select" aria-label="並び替え">
+      <option value="new">新しい順</option>
+      <option value="old">古い順</option>
+      <option value="title">曲名順</option>
+      <option value="artist">歌手名順</option>
+      <option value="rating">得意順</option>
+    </select>
+  </div>
+</div>
+
+<main id="songList" class="song-list"></main>
+
+<div id="emptyState" class="empty-state hidden">
+  <div class="empty-icon">🎶</div>
+  <p id="emptyMessage">まだ曲が登録されていません。<br>「＋」ボタンから持ち歌を追加しましょう！</p>
+</div>
+
+<button id="btnAdd" class="fab" aria-label="曲を追加">＋</button>
+
+<!-- 曲追加・編集モーダル -->
+<div id="editModal" class="modal-overlay hidden">
+  <div class="modal sheet">
+    <div class="sheet-handle"></div>
+    <div class="modal-header">
+      <button id="btnCancelEdit" class="text-btn">キャンセル</button>
+      <h2 id="editModalTitle">曲を追加</h2>
+      <button id="btnSaveEdit" class="text-btn primary">保存</button>
+    </div>
+    <div class="modal-body">
+      <div class="field suggest-wrap">
+        <label for="inputTitle">曲名 <span class="req">必須</span></label>
+        <input type="text" id="inputTitle" placeholder="曲名を入力（候補が表示されます）" autocomplete="off">
+        <div id="suggestBox" class="suggest-box hidden"></div>
+      </div>
+      <div class="field">
+        <label for="inputArtist">歌手名</label>
+        <input type="text" id="inputArtist" placeholder="歌手名" autocomplete="off">
+      </div>
+
+      <div class="field">
+        <label>得意キー</label>
+        <div class="key-stepper">
+          <button type="button" id="keyMinus" class="step-btn">−</button>
+          <span id="keyValue" class="key-value">原曲</span>
+          <button type="button" id="keyPlus" class="step-btn">＋</button>
+          <button type="button" id="keyReset" class="text-btn small">リセット</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>得意度</label>
+        <div id="ratingStars" class="rating-stars">
+          <button type="button" data-star="1">★</button>
+          <button type="button" data-star="2">★</button>
+          <button type="button" data-star="3">★</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>タグ</label>
+        <div id="tagPicker" class="tag-picker"></div>
+        <div class="tag-add-row">
+          <input type="text" id="inputNewTag" placeholder="新しいタグ" autocomplete="off">
+          <button type="button" id="btnAddTag" class="mini-btn">追加</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="inputMemo">メモ</label>
+        <textarea id="inputMemo" rows="3" placeholder="サビ前で息継ぎ、デンモクの番号 など"></textarea>
+      </div>
+
+      <button type="button" id="btnDelete" class="danger-btn hidden">この曲を削除</button>
+    </div>
+  </div>
+</div>
+
+<!-- 設定モーダル -->
+<div id="settingsModal" class="modal-overlay hidden">
+  <div class="modal sheet">
+    <div class="sheet-handle"></div>
+    <div class="modal-header">
+      <span></span>
+      <h2>設定</h2>
+      <button id="btnCloseSettings" class="text-btn primary">閉じる</button>
+    </div>
+    <div class="modal-body">
+      <p class="stats" id="statsText"></p>
+      <div class="settings-group">
+        <h3>バックアップ</h3>
+        <button id="btnExport" class="settings-btn">📤 JSONエクスポート</button>
+        <button id="btnImport" class="settings-btn">📥 JSONインポート</button>
+        <input type="file" id="importFile" accept=".json,application/json" class="hidden">
+        <p class="hint">機種変更やバックアップ用にデータを書き出し・読み込みできます。インポートは既存データに追加されます（同じ曲名+歌手名はスキップ）。</p>
+      </div>
+      <div class="settings-group">
+        <h3>タグの管理</h3>
+        <div id="tagManager" class="tag-manager"></div>
+        <p class="hint">タグをタップすると削除できます（曲からも外れます）。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="js/db.js"></script>
+<script src="js/itunes.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
