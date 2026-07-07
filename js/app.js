@@ -222,13 +222,14 @@
           <button class="sl-move" data-dir="1" aria-label="下へ">↓</button>
           <button class="sl-remove" aria-label="外す">✕</button>
         </div>`;
-      row.querySelector(".sl-check").onclick = async () => {
+      const toggleDone = async () => {
         item.done = !item.done;
         if (item.done) { await recordSung(song); toast(`「${song.title}」歌った！🎤`); }
         else { await unrecordSung(song); toast("歌唱記録を取り消しました"); }
         saveSetlists();
         renderSetlistDetail();
       };
+      row.querySelector(".sl-check").onclick = toggleDone;
       row.querySelectorAll(".sl-move").forEach(b => {
         b.onclick = () => {
           const dir = Number(b.dataset.dir);
@@ -244,7 +245,7 @@
         saveSetlists();
         renderSetlistDetail();
       };
-      row.querySelector(".sl-info").onclick = () => openEdit(song.id);
+      row.querySelector(".sl-info").onclick = toggleDone;
       box.appendChild(row);
     });
   }
@@ -598,11 +599,27 @@
 
   async function showSuggest(term) {
     const box = $("suggestBox");
-    let results = await ITunes.search(term);
+    // 歌手名が入力済みなら「歌手名+曲名」でも検索し、その歌手の曲を優先
+    const artistTerm = $("inputArtist").value.trim();
+    let results;
+    if (artistTerm) {
+      const [byArtist, plain] = await Promise.all([
+        ITunes.search(artistTerm + " " + term),
+        ITunes.search(term),
+      ]);
+      results = byArtist.concat(plain);
+    } else {
+      results = await ITunes.search(term);
+    }
     if ($("inputTitle").value.trim() !== term) return; // 入力が変わっていたら破棄
     // 曲名にマッチする候補だけ残す（歌手名だけの一致は除外）
     const nt = normSuggest(term);
     results = results.filter(r => normSuggest(r.title).includes(nt));
+    const na = normSuggest(artistTerm);
+    if (na) {
+      results.sort((a, b) =>
+        Number(normSuggest(b.artist).includes(na)) - Number(normSuggest(a.artist).includes(na)));
+    }
     // 同じ曲名+歌手名の重複を除去
     const seen = new Set();
     results = results.filter(r => {
