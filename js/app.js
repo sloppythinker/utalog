@@ -6,7 +6,9 @@
   let searchQuery = "";
   let activeTags = new Set();
   let sortMode = "new";
-  let setlist = [];   // [{id, done}]
+  let setlists = [];          // [{id, name, createdAt, items:[{id, done}]}]
+  let currentSetlistId = null;
+  let pickerSongId = null;
   let receivedSongs = null;
 
   // 編集モーダルの状態
@@ -16,11 +18,8 @@
   let editTags = new Set();
   let editArtworkUrl = "";
   let editScores = [];
-  let editSungCount = 0;
-  let editLastSungAt = 0;
+  let editSungDates = [];
   let suggestTimer = null;
-
-  try { setlist = JSON.parse(localStorage.getItem("utalog-setlist") || "[]"); } catch (e) { setlist = []; }
 
   // ---------- ユーティリティ ----------
   function keyLabel(k) {
@@ -65,59 +64,154 @@
     toastTimer = setTimeout(() => el.classList.add("hidden"), 2200);
   }
 
-  // ---------- セットリスト（localStorage） ----------
-  function saveSetlist() {
-    localStorage.setItem("utalog-setlist", JSON.stringify(setlist));
-    renderSetlistBadge();
+  // ---------- 歌唱記録（sungDates = 歌った日時の配列） ----------
+  function sungCountOf(song) { return (song.sungDates || []).length; }
+  function lastSungOf(song) {
+    const d = song.sungDates || [];
+    return d.length ? d[d.length - 1] : 0;
   }
 
-  function inSetlist(id) {
-    return setlist.some(x => x.id === id);
-  }
-
-  function toggleSetlist(id) {
-    if (inSetlist(id)) {
-      setlist = setlist.filter(x => x.id !== id);
-      toast("セットリストから外しました");
-    } else {
-      setlist.push({ id, done: false });
-      toast("セットリストに追加しました");
-    }
-    saveSetlist();
-  }
-
-  function renderSetlistBadge() {
-    const badge = $("setlistBadge");
-    const remain = setlist.filter(x => !x.done).length;
-    badge.textContent = remain;
-    badge.classList.toggle("hidden", remain === 0);
+  function syncSungFields(song) {
+    song.sungCount = sungCountOf(song);
+    song.lastSungAt = lastSungOf(song);
   }
 
   async function recordSung(song) {
-    song.sungCount = (song.sungCount || 0) + 1;
-    song.lastSungAt = Date.now();
+    song.sungDates = song.sungDates || [];
+    song.sungDates.push(Date.now());
+    syncSungFields(song);
     song.updatedAt = Date.now();
     await DB.put(song);
   }
 
   async function unrecordSung(song) {
-    song.sungCount = Math.max(0, (song.sungCount || 0) - 1);
+    song.sungDates = song.sungDates || [];
+    song.sungDates.pop();
+    syncSungFields(song);
     song.updatedAt = Date.now();
     await DB.put(song);
   }
 
-  function renderSetlist() {
-    // 削除済みの曲を掃除
-    const before = setlist.length;
-    setlist = setlist.filter(x => songs.some(s => s.id === x.id));
-    if (setlist.length !== before) saveSetlist();
+  // ---------- 複数セットリスト（localStorage） ----------
+  function defaultListName() {
+    const base = `${fmtDate(Date.now())}のリスト`;
+    if (!setlists.some(l => l.name === base)) return base;
+    let n = 2;
+    while (setlists.some(l => l.name === `${base}(${n})`)) n++;
+    return `${base}(${n})`;
+  }
+
+  function loadSetlists() {
+    try { setlists = JSON.parse(localStorage.getItem("utalog-setlists") || "[]"); } catch (e) { setlists = []; }
+    // 旧形式（単一リスト）からの移行
+    const old = localStorage.getItem("utalog-setlist");
+    if (old !== null) {
+      try {
+        const items = JSON.parse(old);
+        if (Array.isArray(items) && items.length) {
+          setlists.push({ id: DB.newId(), name: defaultListName(), createdAt: Date.now(), items });
+        }
+      } catch (e) { /* 壊れた旧データは破棄 */ }
+      localStorage.removeItem("utalog-setlist");
+      saveSetlists();
+    }
+  }
+
+  function saveSetlists() {
+    localStorage.setItem("utalog-setlists", JSON.stringify(setlists));
+    renderSetlistBadge();
+  }
+
+  function createSetlist(name) {
+    const list = { id: DB.newId(), name: name || defaultListName(), createdAt: Date.now(), items: [] };
+    setlists.unshift(list);
+    saveSetlists();
+    return list;
+  }
+
+  function currentSetlist() {
+    return setlists.find(l => l.id === currentSetlistId) || null;
+  }
+
+  function inAnySetlist(songId) {
+    return setlists.some(l => l.items.some(x => x.id === songId));
+  }
+
+  function renderSetlistBadge() {
+    const badge = $("setlistBadge");
+    const remain = setlists.reduce((n, l) => n + l.items.filter(x => !x.done).length, 0);
+    badge.textContent = remain;
+    badge.classList.toggle("hidden", remain === 0);
+  }
+
+  function cleanSetlists() {
+    let changed = false;
+    setlists.forEach(l => {
+      const before = l.items.length;
+      l.items = l.items.filter(x => songs.some(s => s.id === x.id));
+      if (l.items.length !== before) changed = true;
+    });
+    if (changed) saveSetlists();
+  }
+
+  // ---------- セットリスト一覧（YouTube再生リスト風） ----------
+  function renderPlList() {
+    cleanSetlists();
+    const box = $("plList");
+    box.innerHTML = "";
+    $("plEmpty").classList.toggle("hidden", setlists.length > 0);
+
+    setlists.forEach(list => {
+      const total = list.items.length;
+      const done = list.items.filter(x => x.done).length;
+      const first = list.items.map(x => songs.find(s => s.id === x.id)).find(s => s && s.artworkUrl);
+      const thumb = first
+        ? `<img src="${esc(first.artworkUrl)}" alt="" loading="lazy">`
+        : `<div class="pl-thumb-ph">📋</div>`;
+      const row = document.createElement("div");
+      row.className = "pl-row";
+      row.innerHTML = `
+        <div class="pl-thumb">${thumb}<span class="pl-count">${total}曲</span></div>
+        <div class="pl-meta">
+          <div class="pl-name">${esc(list.name)}</div>
+          <div class="pl-sub">${fmtDate(list.createdAt)}作成・${done}/${total}曲 歌った</div>
+          <div class="pl-progress"><div class="pl-progress-bar" style="width:${total ? Math.round(done / total * 100) : 0}%"></div></div>
+        </div>
+        <span class="pl-chevron">›</span>`;
+      row.onclick = () => openSetlistDetail(list.id);
+      box.appendChild(row);
+    });
+  }
+
+  // ---------- セットリスト詳細 ----------
+  function openSetlistDetail(id) {
+    currentSetlistId = id;
+    $("plListView").classList.add("hidden");
+    $("plDetailView").classList.remove("hidden");
+    renderSetlistDetail();
+  }
+
+  function closeSetlistDetail() {
+    currentSetlistId = null;
+    $("plDetailView").classList.add("hidden");
+    $("plListView").classList.remove("hidden");
+    renderPlList();
+  }
+
+  function renderSetlistDetail() {
+    const list = currentSetlist();
+    if (!list) { closeSetlistDetail(); return; }
+    $("plName").textContent = list.name;
+    const done = list.items.filter(x => x.done).length;
+    $("plSub").textContent = `${done}/${list.items.length}曲 歌った`;
 
     const box = $("setlistList");
     box.innerHTML = "";
-    $("setlistEmpty").classList.toggle("hidden", setlist.length > 0);
+    $("setlistEmpty").classList.toggle("hidden", list.items.length > 0);
 
-    setlist.forEach((item, idx) => {
+    list.items.forEach((item, idx) => {
       const song = songs.find(s => s.id === item.id);
+      if (!song) return;
       const row = document.createElement("div");
       row.className = "sl-item" + (item.done ? " done" : "");
       row.innerHTML = `
@@ -134,29 +228,69 @@
       row.querySelector(".sl-check").onclick = async () => {
         item.done = !item.done;
         if (item.done) { await recordSung(song); toast(`「${song.title}」歌った！🎤`); }
-        else { await unrecordSung(song); }
-        saveSetlist();
-        renderSetlist();
+        else { await unrecordSung(song); toast("歌唱記録を取り消しました"); }
+        saveSetlists();
+        renderSetlistDetail();
       };
       row.querySelectorAll(".sl-move").forEach(b => {
         b.onclick = () => {
           const dir = Number(b.dataset.dir);
           const j = idx + dir;
-          if (j < 0 || j >= setlist.length) return;
-          [setlist[idx], setlist[j]] = [setlist[j], setlist[idx]];
-          saveSetlist();
-          renderSetlist();
+          if (j < 0 || j >= list.items.length) return;
+          [list.items[idx], list.items[j]] = [list.items[j], list.items[idx]];
+          saveSetlists();
+          renderSetlistDetail();
         };
       });
       row.querySelector(".sl-remove").onclick = () => {
-        setlist.splice(idx, 1);
-        saveSetlist();
-        renderSetlist();
+        list.items.splice(idx, 1);
+        saveSetlists();
+        renderSetlistDetail();
       };
       row.querySelector(".sl-info").onclick = () => openEdit(song.id);
       box.appendChild(row);
     });
   }
+
+  // ---------- ピッカー（曲をどのリストに入れるか） ----------
+  function openPicker(songId) {
+    pickerSongId = songId;
+    renderPicker();
+    $("pickerModal").classList.remove("hidden");
+  }
+
+  function renderPicker() {
+    const box = $("pickerList");
+    box.innerHTML = "";
+    if (setlists.length === 0) {
+      box.innerHTML = `<p class="hint">セットリストはまだありません。下のボタンで作成できます。</p>`;
+      return;
+    }
+    setlists.forEach(list => {
+      const member = list.items.some(x => x.id === pickerSongId);
+      const row = document.createElement("button");
+      row.className = "picker-row" + (member ? " on" : "");
+      row.innerHTML = `
+        <span class="picker-check">${member ? "✓" : ""}</span>
+        <span class="picker-name">${esc(list.name)}</span>
+        <span class="picker-count">${list.items.length}曲</span>`;
+      row.onclick = () => {
+        if (member) {
+          list.items = list.items.filter(x => x.id !== pickerSongId);
+          toast(`「${esc0(list.name)}」から外しました`);
+        } else {
+          list.items.push({ id: pickerSongId, done: false });
+          toast(`「${esc0(list.name)}」に追加しました`);
+        }
+        saveSetlists();
+        renderPicker();
+        renderList();
+      };
+      box.appendChild(row);
+    });
+  }
+
+  function esc0(s) { return s; } // toast はtextContentなのでエスケープ不要
 
   // ---------- タブ ----------
   function switchTab(tab) {
@@ -165,7 +299,10 @@
     $("setlistView").classList.toggle("hidden", isList);
     $("tabList").classList.toggle("active", isList);
     $("tabSetlist").classList.toggle("active", !isList);
-    if (!isList) renderSetlist();
+    if (!isList) {
+      if (currentSetlistId && currentSetlist()) renderSetlistDetail();
+      else { currentSetlistId = null; $("plDetailView").classList.add("hidden"); $("plListView").classList.remove("hidden"); renderPlList(); }
+    }
   }
 
   // ---------- リスト描画 ----------
@@ -183,7 +320,7 @@
       artist: (a, b) => (a.artist || "").localeCompare(b.artist || "", "ja"),
       rating: (a, b) => (b.rating || 0) - (a.rating || 0) || b.createdAt - a.createdAt,
       score: (a, b) => (bestScore(b) ?? -1) - (bestScore(a) ?? -1),
-      gobusata: (a, b) => (a.lastSungAt || 0) - (b.lastSungAt || 0),
+      gobusata: (a, b) => lastSungOf(a) - lastSungOf(b),
     }[sortMode];
     return list.sort(cmp);
   }
@@ -226,8 +363,10 @@
       const stars = song.rating ? `<span class="rating-badge">${"★".repeat(song.rating)}</span>` : "";
       const best = bestScore(song);
       const scoreB = best !== null ? `<span class="score-badge">🏆${best}</span>` : "";
-      const tags = (song.tags || []).map(t => `<span class="mini-tag">${esc(t)}</span>`).join("");
       const memo = song.memo ? `<span class="memo-mark">📝</span>` : "";
+      const tags = (song.tags || []).length
+        ? `<div class="song-tags">${song.tags.map(t => `<span class="mini-tag">${esc(t)}</span>`).join("")}</div>`
+        : "";
       card.innerHTML = `
         ${art}
         <div class="song-info">
@@ -235,16 +374,16 @@
           <div class="song-artist">${esc(song.artist) || "&nbsp;"}</div>
           <div class="song-meta">
             <span class="key-badge">キー ${keyLabel(song.key)}</span>
-            ${stars}${scoreB}${tags}${memo}
+            ${stars}${scoreB}${memo}
           </div>
+          ${tags}
         </div>
-        <button class="sl-quick ${inSetlist(song.id) ? "on" : ""}" aria-label="セットリストへ">📋</button>`;
+        <button class="sl-quick ${inAnySetlist(song.id) ? "on" : ""}" aria-label="セットリストへ">📋</button>`;
       card.onclick = () => openEdit(song.id);
       const q = card.querySelector(".sl-quick");
       q.onclick = (e) => {
         e.stopPropagation();
-        toggleSetlist(song.id);
-        q.classList.toggle("on", inSetlist(song.id));
+        openPicker(song.id);
       };
       box.appendChild(card);
     });
@@ -270,12 +409,9 @@
     editTags = new Set(song ? song.tags || [] : []);
     editArtworkUrl = song ? song.artworkUrl || "" : "";
     editScores = song ? [...(song.scores || [])] : [];
-    editSungCount = song ? song.sungCount || 0 : 0;
-    editLastSungAt = song ? song.lastSungAt || 0 : 0;
+    editSungDates = song ? [...(song.sungDates || [])] : [];
     $("btnDelete").classList.toggle("hidden", !song);
-    const slBtn = $("btnToggleSetlist");
-    slBtn.classList.toggle("hidden", !song);
-    if (song) updateSetlistBtn();
+    $("btnEditToSetlist").classList.toggle("hidden", !song);
     hideSuggest();
     updateKeyView();
     updateRatingView();
@@ -284,11 +420,6 @@
     renderTagPicker();
     $("editModal").classList.remove("hidden");
     if (!song) setTimeout(() => $("inputTitle").focus(), 250);
-  }
-
-  function updateSetlistBtn() {
-    $("btnToggleSetlist").textContent = inSetlist(editingId)
-      ? "📋 セットリストから外す" : "📋 セットリストに追加";
   }
 
   function closeEdit() {
@@ -311,8 +442,9 @@
       rating: editRating,
       memo: $("inputMemo").value.trim(),
       scores: editScores,
-      sungCount: editSungCount,
-      lastSungAt: editLastSungAt,
+      sungDates: editSungDates,
+      sungCount: editSungDates.length,
+      lastSungAt: editSungDates.length ? editSungDates[editSungDates.length - 1] : 0,
       createdAt: base ? base.createdAt : now,
       updatedAt: now,
     };
@@ -330,8 +462,8 @@
     if (!confirm(`「${song.title}」を削除しますか？`)) return;
     await DB.remove(song.id);
     songs = songs.filter(s => s.id !== song.id);
-    setlist = setlist.filter(x => x.id !== song.id);
-    saveSetlist();
+    setlists.forEach(l => { l.items = l.items.filter(x => x.id !== song.id); });
+    saveSetlists();
     closeEdit();
     render();
     toast("削除しました");
@@ -379,9 +511,10 @@
 
   // 歌唱記録
   function updateSungView() {
-    $("sungInfo").textContent = editSungCount
-      ? `${editSungCount}回（最終: ${fmtDate(editLastSungAt)}）`
+    $("sungInfo").textContent = editSungDates.length
+      ? `${editSungDates.length}回（最終: ${fmtDate(editSungDates[editSungDates.length - 1])}）`
       : "まだ記録なし";
+    $("btnSungUndo").disabled = editSungDates.length === 0;
   }
 
   // タグピッカー
@@ -537,7 +670,11 @@
       const k = norm(s.title) + "|" + norm(s.artist || "");
       if (existingKeys.has(k)) return;
       existingKeys.add(k);
-      added.push({
+      let sungDates = Array.isArray(s.sungDates) ? s.sungDates.filter(x => typeof x === "number") : [];
+      if (!sungDates.length && Number(s.sungCount) > 0) {
+        sungDates = Array(Number(s.sungCount)).fill(Number(s.lastSungAt) || now);
+      }
+      const song = {
         id: DB.newId(),
         title: String(s.title),
         artist: String(s.artist || ""),
@@ -549,11 +686,12 @@
         scores: Array.isArray(s.scores)
           ? s.scores.filter(x => x && typeof x.score === "number").map(x => ({ score: x.score, date: Number(x.date) || now }))
           : [],
-        sungCount: Number(s.sungCount) || 0,
-        lastSungAt: Number(s.lastSungAt) || 0,
+        sungDates,
         createdAt: Number(s.createdAt) || now + i,
         updatedAt: now,
-      });
+      };
+      syncSungFields(song);
+      added.push(song);
     });
     if (added.length) {
       await DB.bulkPut(added);
@@ -565,7 +703,7 @@
   // ---------- 設定 ----------
   function openSettings() {
     const tagCount = allTags().length;
-    const sungTotal = songs.reduce((n, s) => n + (s.sungCount || 0), 0);
+    const sungTotal = songs.reduce((n, s) => n + sungCountOf(s), 0);
     $("statsText").textContent = `登録曲数: ${songs.length}曲 ／ タグ: ${tagCount}個 ／ 累計歌唱: ${sungTotal}回`;
     renderTagManager();
     $("settingsModal").classList.remove("hidden");
@@ -627,6 +765,53 @@
     }
   }
 
+  // ---------- シートを下スワイプで閉じる ----------
+  function enableSheetDrag(overlay, onClose) {
+    const sheet = overlay.querySelector(".modal");
+    let startY = null;
+    let dy = 0;
+
+    sheet.addEventListener("touchstart", (e) => {
+      const t = e.target;
+      // ハンドル・ヘッダー部分からのみドラッグ開始（ボタンは除外）
+      if (!t.closest(".sheet-handle") && !t.closest(".modal-header")) return;
+      if (t.closest("button")) return;
+      startY = e.touches[0].clientY;
+      dy = 0;
+      sheet.style.transition = "none";
+    }, { passive: true });
+
+    sheet.addEventListener("touchmove", (e) => {
+      if (startY === null) return;
+      dy = Math.max(0, e.touches[0].clientY - startY);
+      sheet.style.transform = `translateY(${dy}px)`;
+    }, { passive: true });
+
+    sheet.addEventListener("touchend", () => {
+      if (startY === null) return;
+      sheet.style.transition = "transform 0.2s ease-out";
+      if (dy > 110) {
+        sheet.style.transform = "translateY(100%)";
+        setTimeout(() => {
+          onClose();
+          sheet.style.transition = "";
+          sheet.style.transform = "";
+        }, 180);
+      } else {
+        sheet.style.transform = "";
+        setTimeout(() => { sheet.style.transition = ""; }, 220);
+      }
+      startY = null;
+      dy = 0;
+    });
+  }
+
+  enableSheetDrag($("editModal"), closeEdit);
+  enableSheetDrag($("pickerModal"), () => $("pickerModal").classList.add("hidden"));
+  enableSheetDrag($("settingsModal"), () => $("settingsModal").classList.add("hidden"));
+  enableSheetDrag($("shareModal"), () => $("shareModal").classList.add("hidden"));
+  enableSheetDrag($("receiveModal"), () => $("receiveModal").classList.add("hidden"));
+
   // ---------- イベント登録 ----------
   $("searchInput").addEventListener("input", (e) => {
     searchQuery = e.target.value;
@@ -644,16 +829,66 @@
   $("tabList").onclick = () => switchTab("list");
   $("tabSetlist").onclick = () => switchTab("setlist");
 
+  $("btnNewSetlist").onclick = () => {
+    const name = prompt("セットリストの名前", defaultListName());
+    if (name === null) return;
+    createSetlist(name.trim() || undefined);
+    renderPlList();
+    toast("セットリストを作成しました");
+  };
+
+  $("btnPlBack").onclick = closeSetlistDetail;
+
+  $("btnPlRename").onclick = () => {
+    const list = currentSetlist();
+    if (!list) return;
+    const name = prompt("セットリストの名前", list.name);
+    if (name === null || !name.trim()) return;
+    list.name = name.trim();
+    saveSetlists();
+    renderSetlistDetail();
+  };
+
+  $("btnPlDelete").onclick = () => {
+    const list = currentSetlist();
+    if (!list) return;
+    if (!confirm(`セットリスト「${list.name}」を削除しますか？（曲や歌唱記録は消えません）`)) return;
+    setlists = setlists.filter(l => l.id !== list.id);
+    saveSetlists();
+    closeSetlistDetail();
+    renderList();
+    toast("セットリストを削除しました");
+  };
+
   $("btnClearDone").onclick = () => {
-    setlist = setlist.filter(x => !x.done);
-    saveSetlist();
-    renderSetlist();
+    const list = currentSetlist();
+    if (!list) return;
+    list.items = list.items.filter(x => !x.done);
+    saveSetlists();
+    renderSetlistDetail();
   };
   $("btnClearSetlist").onclick = () => {
-    if (setlist.length && !confirm("セットリストを空にしますか？（歌唱記録は残ります）")) return;
-    setlist = [];
-    saveSetlist();
-    renderSetlist();
+    const list = currentSetlist();
+    if (!list) return;
+    if (list.items.length && !confirm("このリストから全曲外しますか？（歌唱記録は残ります）")) return;
+    list.items = [];
+    saveSetlists();
+    renderSetlistDetail();
+  };
+
+  $("btnClosePicker").onclick = () => { $("pickerModal").classList.add("hidden"); renderList(); };
+  $("pickerModal").addEventListener("click", (e) => {
+    if (e.target === $("pickerModal")) { $("pickerModal").classList.add("hidden"); renderList(); }
+  });
+  $("btnPickerNew").onclick = () => {
+    const name = prompt("セットリストの名前", defaultListName());
+    if (name === null) return;
+    const list = createSetlist(name.trim() || undefined);
+    list.items.push({ id: pickerSongId, done: false });
+    saveSetlists();
+    renderPicker();
+    renderList();
+    toast(`「${list.name}」を作成して追加しました`);
   };
 
   $("btnAdd").onclick = () => openEdit(null);
@@ -680,17 +915,19 @@
   });
 
   $("btnSungToday").onclick = () => {
-    editSungCount++;
-    editLastSungAt = Date.now();
+    editSungDates.push(Date.now());
     updateSungView();
     toast("保存すると記録されます");
   };
+  $("btnSungUndo").onclick = () => {
+    if (!editSungDates.length) return;
+    editSungDates.pop();
+    updateSungView();
+    toast("1回分取り消しました（保存で確定）");
+  };
 
-  $("btnToggleSetlist").onclick = () => {
-    toggleSetlist(editingId);
-    updateSetlistBtn();
-    renderSetlistBadge();
-    renderList();
+  $("btnEditToSetlist").onclick = () => {
+    if (editingId) openPicker(editingId);
   };
 
   $("btnAddTag").onclick = addNewTag;
@@ -702,7 +939,7 @@
     editArtworkUrl = "";
     clearTimeout(suggestTimer);
     const term = e.target.value.trim();
-    if (term.length < 2) { hideSuggest(); return; }
+    if (term.length < 1) { hideSuggest(); return; }
     suggestTimer = setTimeout(() => showSuggest(term), 350);
   });
 
@@ -753,8 +990,19 @@
   };
 
   // ---------- 起動 ----------
+  loadSetlists();
   DB.getAll().then(async (list) => {
     songs = list;
+    // 旧データ移行: sungCountのみの曲に sungDates を生成
+    const migrated = [];
+    songs.forEach(s => {
+      if (!Array.isArray(s.sungDates)) {
+        const n = Number(s.sungCount) || 0;
+        s.sungDates = n > 0 ? Array(n).fill(s.lastSungAt || s.updatedAt || Date.now()) : [];
+        migrated.push(s);
+      }
+    });
+    if (migrated.length) await DB.bulkPut(migrated);
     render();
     const m = location.hash.match(/^#share=(.+)$/);
     if (m) {

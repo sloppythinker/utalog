@@ -1,22 +1,22 @@
 // iTunes Search API（JSONP方式 — CORS制限を回避）
+// 各リクエストは自己完結。連続入力時も互いに干渉しない（古い結果は呼び出し側で破棄）
 const ITunes = (() => {
   let seq = 0;
-  let activeScript = null;
 
   function search(term, limit = 8) {
     return new Promise((resolve) => {
       if (!term.trim()) { resolve([]); return; }
-      if (activeScript) {
-        activeScript.remove();
-        activeScript = null;
-      }
       const cbName = "__itunesCb" + (++seq);
-      const timer = setTimeout(() => cleanup([]), 6000);
+      const s = document.createElement("script");
+      let settled = false;
+      const timer = setTimeout(() => cleanup([]), 8000);
 
       function cleanup(results) {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         delete window[cbName];
-        if (activeScript) { activeScript.remove(); activeScript = null; }
+        s.remove();
         resolve(results);
       }
 
@@ -29,14 +29,11 @@ const ITunes = (() => {
         cleanup(results);
       };
 
-      const url = "https://itunes.apple.com/search?" + new URLSearchParams({
+      s.src = "https://itunes.apple.com/search?" + new URLSearchParams({
         term, country: "JP", media: "music", entity: "song",
         limit: String(limit), lang: "ja_jp", callback: cbName,
       });
-      const s = document.createElement("script");
-      s.src = url;
       s.onerror = () => cleanup([]);
-      activeScript = s;
       document.head.appendChild(s);
     });
   }

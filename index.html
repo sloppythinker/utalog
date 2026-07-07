@@ -54,17 +54,39 @@
 
 <!-- セットリスト画面 -->
 <div id="setlistView" class="hidden">
-  <div class="setlist-head">
-    <p class="hint">今日歌う曲を並べて、歌ったらチェック！<br>（レパートリーの各曲の 📋 ボタンで追加できます）</p>
-    <div class="setlist-actions">
-      <button id="btnClearDone" class="mini-btn">✓済みをクリア</button>
-      <button id="btnClearSetlist" class="mini-btn">全てクリア</button>
+
+  <!-- リスト一覧（YouTube再生リスト風） -->
+  <div id="plListView">
+    <div class="setlist-head">
+      <button id="btnNewSetlist" class="settings-btn new-list-btn">＋ 新しいセットリスト</button>
+    </div>
+    <main id="plList" class="song-list"></main>
+    <div id="plEmpty" class="empty-state hidden">
+      <div class="empty-icon">📋</div>
+      <p>セットリストはまだありません。<br>「＋」から作成するか、曲の 📋 から追加できます。</p>
     </div>
   </div>
-  <main id="setlistList" class="song-list"></main>
-  <div id="setlistEmpty" class="empty-state hidden">
-    <div class="empty-icon">📋</div>
-    <p>セットリストは空です。<br>レパートリーの曲の 📋 をタップして追加しましょう。</p>
+
+  <!-- リスト詳細 -->
+  <div id="plDetailView" class="hidden">
+    <div class="pl-detail-head">
+      <button id="btnPlBack" class="icon-btn" aria-label="戻る">←</button>
+      <div class="pl-detail-title">
+        <h2 id="plName"></h2>
+        <span id="plSub" class="pl-sub"></span>
+      </div>
+      <button id="btnPlRename" class="icon-btn" aria-label="名前を変更">✏️</button>
+      <button id="btnPlDelete" class="icon-btn" aria-label="リストを削除">🗑️</button>
+    </div>
+    <div class="setlist-actions">
+      <button id="btnClearDone" class="mini-btn">✓済みをクリア</button>
+      <button id="btnClearSetlist" class="mini-btn">全曲外す</button>
+    </div>
+    <main id="setlistList" class="song-list"></main>
+    <div id="setlistEmpty" class="empty-state hidden">
+      <div class="empty-icon">🎶</div>
+      <p>このリストは空です。<br>レパートリーの曲の 📋 から追加しましょう。</p>
+    </div>
   </div>
 </div>
 
@@ -127,7 +149,10 @@
         <label>歌唱記録</label>
         <div class="sung-row">
           <span id="sungInfo" class="sung-info">まだ記録なし</span>
-          <button type="button" id="btnSungToday" class="mini-btn">今日歌った +1</button>
+          <div class="sung-btns">
+            <button type="button" id="btnSungUndo" class="mini-btn">取り消し −1</button>
+            <button type="button" id="btnSungToday" class="mini-btn">今日歌った +1</button>
+          </div>
         </div>
       </div>
 
@@ -145,8 +170,25 @@
         <textarea id="inputMemo" rows="3" placeholder="サビ前で息継ぎ、デンモクの番号 など"></textarea>
       </div>
 
-      <button type="button" id="btnToggleSetlist" class="settings-btn hidden">📋 セットリストに追加</button>
+      <button type="button" id="btnEditToSetlist" class="settings-btn hidden">📋 セットリストに追加…</button>
       <button type="button" id="btnDelete" class="danger-btn hidden">この曲を削除</button>
+    </div>
+  </div>
+</div>
+
+<!-- セットリスト選択ピッカー -->
+<div id="pickerModal" class="modal-overlay hidden">
+  <div class="modal sheet">
+    <div class="sheet-handle"></div>
+    <div class="modal-header">
+      <span></span>
+      <h2>セットリストに追加</h2>
+      <button id="btnClosePicker" class="text-btn primary">閉じる</button>
+    </div>
+    <div class="modal-body">
+      <div id="pickerList" class="picker-list"></div>
+      <button id="btnPickerNew" class="settings-btn">＋ 新しいセットリストを作って追加</button>
+      <p class="hint">タップで追加/解除できます。</p>
     </div>
   </div>
 </div>
