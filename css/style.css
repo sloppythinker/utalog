@@ -1007,3 +1007,164 @@ html, body {
   from { opacity: 0; transform: translate(-50%, 8px); }
   to { opacity: 1; transform: translate(-50%, 0); }
 }
+
+/* ---------- 履歴画面 ---------- */
+.history-list {
+  padding: 8px 16px calc(160px + var(--safe-bottom));
+}
+.history-date {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.history-date:first-child { margin-top: 4px; }
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.history-art {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  flex-shrink: 0;
+  object-fit: cover;
+  background: var(--bg-elev2);
+}
+.history-art.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+.history-info { flex: 1; min-width: 0; }
+.history-count {
+  color: var(--accent2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* ---------- スコア推移グラフ ---------- */
+.score-chart {
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 8px 4px;
+  margin-bottom: 8px;
+}
+.score-chart .hint { text-align: center; margin: 2px 0 4px; }
+.score-svg { display: block; width: 100%; height: auto; }
+.score-svg .grid { stroke: var(--border); stroke-width: 1; }
+.score-svg .axis { fill: var(--text-dim); font-size: 10px; }
+.score-svg .line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.score-svg .dots circle { fill: var(--accent2); }
+
+/* ---------- おまかせ選曲 ---------- */
+.dice-btn {
+  flex-shrink: 0;
+  width: 38px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  font-size: 17px;
+  cursor: pointer;
+}
+.dice-btn:active { background: var(--bg-elev2); }
+.roulette-result {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 10px 18px;
+  margin-bottom: 12px;
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-height: 210px;
+  opacity: 0.65;
+  transition: opacity 0.15s;
+}
+.roulette-result.settled {
+  opacity: 1;
+  border-color: var(--accent);
+  cursor: pointer;
+}
+.roulette-art {
+  width: 110px;
+  height: 110px;
+  border-radius: 14px;
+  object-fit: cover;
+  background: var(--bg-elev);
+}
+.roulette-art.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 44px;
+}
+.roulette-title {
+  font-size: 17px;
+  font-weight: 700;
+  text-align: center;
+  margin-top: 4px;
+}
+.roulette-artist { color: var(--text-dim); font-size: 13px; }
+.roulette-meta { display: flex; gap: 6px; align-items: center; }
+
+/* ---------- 覚え中 ---------- */
+.practice-toggle {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: none;
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+}
+.practice-toggle.on {
+  border: 1px solid var(--accent);
+  color: var(--text);
+  background: rgba(184, 102, 255, 0.12);
+}
+.practicing-badge {
+  font-size: 11px;
+  color: #ffc861;
+  white-space: nowrap;
+}
+.tag-chip.practice-chip { border-style: dashed; }
+.tag-chip.practice-chip.active {
+  background: rgba(255, 200, 97, 0.15);
+  border-color: #ffc861;
+  color: #ffc861;
+}
+
+/* ---------- かぶりチェック ---------- */
+.receive-row { align-items: center; }
+.receive-row.have { opacity: 0.55; }
+.receive-flag {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.receive-flag.flag-new { background: var(--accent-grad); color: #fff; }
+.receive-flag.flag-have { background: var(--bg-elev2); color: var(--text-dim); border: 1px solid var(--border); }
+.receive-row .receive-title { flex: 1; }

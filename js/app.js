@@ -5,6 +5,7 @@
   let songs = [];
   let searchQuery = "";
   let activeTags = new Set();
+  let filterPracticing = false;
   let sortMode = "new";
   let setlists = [];          // [{id, name, createdAt, items:[{id, done}]}]
   let currentSetlistId = null;
@@ -15,6 +16,7 @@
   let editingId = null;   // null = 新規
   let editKey = 0;
   let editRating = 0;
+  let editPracticing = false;
   let editTags = new Set();
   let editArtworkUrl = "";
   let editScores = [];
@@ -292,15 +294,60 @@
 
   // ---------- タブ ----------
   function switchTab(tab) {
-    const isList = tab === "list";
-    $("listView").classList.toggle("hidden", !isList);
-    $("setlistView").classList.toggle("hidden", isList);
-    $("tabList").classList.toggle("active", isList);
-    $("tabSetlist").classList.toggle("active", !isList);
-    if (!isList) {
+    const views = { list: "listView", setlist: "setlistView", history: "historyView" };
+    const tabs = { list: "tabList", setlist: "tabSetlist", history: "tabHistory" };
+    Object.keys(views).forEach(k => {
+      $(views[k]).classList.toggle("hidden", k !== tab);
+      $(tabs[k]).classList.toggle("active", k === tab);
+    });
+    if (tab === "setlist") {
       if (currentSetlistId && currentSetlist()) renderSetlistDetail();
       else { currentSetlistId = null; $("plDetailView").classList.add("hidden"); $("plListView").classList.remove("hidden"); renderPlList(); }
     }
+    if (tab === "history") renderHistory();
+  }
+
+  // ---------- 歌った履歴 ----------
+  function renderHistory() {
+    const box = $("historyList");
+    box.innerHTML = "";
+    const byDay = new Map(); // 日付0時のts → Map(songId → 回数)
+    songs.forEach(s => (s.sungDates || []).forEach(ts => {
+      const d = new Date(ts);
+      const key = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+      if (!byDay.has(key)) byDay.set(key, new Map());
+      const m = byDay.get(key);
+      m.set(s.id, (m.get(s.id) || 0) + 1);
+    }));
+    const days = [...byDay.keys()].sort((a, b) => b - a);
+    $("historyEmpty").classList.toggle("hidden", days.length > 0);
+    const youbi = ["日", "月", "火", "水", "木", "金", "土"];
+    days.forEach(day => {
+      const m = byDay.get(day);
+      const total = [...m.values()].reduce((a, b) => a + b, 0);
+      const head = document.createElement("div");
+      head.className = "history-date";
+      head.textContent = `${fmtDate(day)}（${youbi[new Date(day).getDay()]}）・${total}曲`;
+      box.appendChild(head);
+      m.forEach((count, id) => {
+        const song = songs.find(s => s.id === id);
+        if (!song) return;
+        const row = document.createElement("div");
+        row.className = "history-row";
+        const art = song.artworkUrl
+          ? `<img class="history-art" src="${esc(song.artworkUrl)}" alt="" loading="lazy">`
+          : `<div class="history-art placeholder">🎵</div>`;
+        row.innerHTML = `
+          ${art}
+          <div class="history-info">
+            <div class="song-title">${esc(song.title)}${count > 1 ? ` <span class="history-count">×${count}</span>` : ""}</div>
+            <div class="song-artist">${esc(song.artist) || "&nbsp;"}</div>
+          </div>
+          <span class="key-badge">キー ${keyLabel(song.key)}</span>`;
+        row.onclick = () => openEdit(song.id);
+        box.appendChild(row);
+      });
+    });
   }
 
   // ---------- リスト描画 ----------
@@ -308,6 +355,7 @@
     const q = norm(searchQuery);
     let list = songs.filter(s => {
       if (q && !norm(s.title).includes(q) && !norm(s.artist).includes(q)) return false;
+      if (filterPracticing && !s.practicing) return false;
       for (const t of activeTags) if (!(s.tags || []).includes(t)) return false;
       return true;
     });
@@ -326,6 +374,13 @@
   function renderTagFilter() {
     const box = $("tagFilter");
     box.innerHTML = "";
+    if (songs.some(s => s.practicing)) {
+      const pbtn = document.createElement("button");
+      pbtn.className = "tag-chip practice-chip" + (filterPracticing ? " active" : "");
+      pbtn.textContent = "📖覚え中";
+      pbtn.onclick = () => { filterPracticing = !filterPracticing; render(); };
+      box.appendChild(pbtn);
+    }
     allTags().forEach(tag => {
       const btn = document.createElement("button");
       btn.className = "tag-chip" + (activeTags.has(tag) ? " active" : "");
@@ -362,6 +417,7 @@
       const best = bestScore(song);
       const scoreB = best !== null ? `<span class="score-badge">🏆${best}</span>` : "";
       const memo = song.memo ? `<span class="memo-mark">📝</span>` : "";
+      const prac = song.practicing ? `<span class="practicing-badge">📖覚え中</span>` : "";
       const tags = (song.tags || []).length
         ? `<div class="song-tags">${song.tags.map(t => `<span class="mini-tag">${esc(t)}</span>`).join("")}</div>`
         : "";
@@ -372,7 +428,7 @@
           <div class="song-artist">${esc(song.artist) || "&nbsp;"}</div>
           <div class="song-meta">
             <span class="key-badge">キー ${keyLabel(song.key)}</span>
-            ${stars}${scoreB}${memo}
+            ${stars}${scoreB}${memo}${prac}
           </div>
           ${tags}
         </div>
@@ -404,6 +460,8 @@
     $("inputScore").value = "";
     editKey = song ? song.key || 0 : 0;
     editRating = song ? song.rating || 0 : 0;
+    editPracticing = song ? !!song.practicing : false;
+    updatePracticingView();
     editTags = new Set(song ? song.tags || [] : []);
     editArtworkUrl = song ? song.artworkUrl || "" : "";
     editScores = song ? [...(song.scores || [])] : [];
@@ -446,6 +504,7 @@
       tags: [...editTags],
       key: editKey,
       rating: editRating,
+      practicing: editPracticing,
       memo: $("inputMemo").value.trim(),
       scores: editScores,
       sungDates: editSungDates,
@@ -480,6 +539,11 @@
     $("keyValue").textContent = keyLabel(editKey);
   }
 
+  // 覚え中トグル
+  function updatePracticingView() {
+    $("btnPracticing").classList.toggle("on", editPracticing);
+  }
+
   // 得意度
   function updateRatingView() {
     $("ratingStars").querySelectorAll("button").forEach(b => {
@@ -493,6 +557,7 @@
     const best = editScores.length ? Math.max(...editScores.map(x => x.score)) : null;
     bestEl.classList.toggle("hidden", best === null);
     if (best !== null) bestEl.innerHTML = `ベスト <strong>${best}</strong> 点`;
+    renderScoreChart();
     const hist = $("scoreHistory");
     hist.innerHTML = "";
     [...editScores].sort((a, b) => b.date - a.date).forEach(entry => {
@@ -505,6 +570,42 @@
       };
       hist.appendChild(row);
     });
+  }
+
+  // スコア推移の折れ線グラフ（2件以上で表示）
+  function renderScoreChart() {
+    const chart = $("scoreChart");
+    if (editScores.length < 2) {
+      chart.classList.add("hidden");
+      chart.innerHTML = "";
+      return;
+    }
+    const pts = [...editScores].sort((a, b) => a.date - b.date);
+    const vals = pts.map(p => p.score);
+    const lo = Math.max(0, Math.floor(Math.min(...vals)) - 1);
+    const hi = Math.min(100, Math.ceil(Math.max(...vals)) + 1);
+    const W = 320, H = 96, PL = 34, PR = 12, PT = 12, PB = 18;
+    const x = (i) => PL + (W - PL - PR) * i / (pts.length - 1);
+    const y = (v) => PT + (H - PT - PB) * (1 - (v - lo) / Math.max(0.1, hi - lo));
+    const line = pts.map((p, i) => `${x(i).toFixed(1)},${y(p.score).toFixed(1)}`).join(" ");
+    const dots = pts.map((p, i) =>
+      `<circle cx="${x(i).toFixed(1)}" cy="${y(p.score).toFixed(1)}" r="3.5"/>`).join("");
+    const bestV = Math.max(...vals);
+    const firstD = fmtDate(pts[0].date).slice(5);
+    const lastD = fmtDate(pts[pts.length - 1].date).slice(5);
+    chart.innerHTML = `
+      <svg viewBox="0 0 ${W} ${H}" class="score-svg" role="img" aria-label="スコア推移">
+        <line x1="${PL}" y1="${y(hi)}" x2="${W - PR}" y2="${y(hi)}" class="grid"/>
+        <line x1="${PL}" y1="${y(lo)}" x2="${W - PR}" y2="${y(lo)}" class="grid"/>
+        <text x="${PL - 4}" y="${y(hi) + 4}" class="axis" text-anchor="end">${hi}</text>
+        <text x="${PL - 4}" y="${y(lo) + 4}" class="axis" text-anchor="end">${lo}</text>
+        <text x="${PL}" y="${H - 4}" class="axis">${firstD}</text>
+        <text x="${W - PR}" y="${H - 4}" class="axis" text-anchor="end">${lastD}</text>
+        <polyline points="${line}" class="line"/>
+        <g class="dots">${dots}</g>
+      </svg>
+      <div class="hint">スコア推移（${pts.length}回・ベスト${bestV}点）</div>`;
+    chart.classList.remove("hidden");
   }
 
   function addScore() {
@@ -675,6 +776,49 @@
     buildSuggestBox(box, rows, "歌手名の候補");
   }
 
+  // ---------- おまかせ選曲ルーレット ----------
+  let rouletteTimer = null;
+
+  function renderRoulettePick(song, settled) {
+    const box = $("rouletteResult");
+    const art = song.artworkUrl
+      ? `<img class="roulette-art" src="${esc(song.artworkUrl)}" alt="">`
+      : `<div class="roulette-art placeholder">🎵</div>`;
+    box.innerHTML = `
+      ${art}
+      <div class="roulette-title">${esc(song.title)}</div>
+      <div class="roulette-artist">${esc(song.artist) || "&nbsp;"}</div>
+      <div class="roulette-meta"><span class="key-badge">キー ${keyLabel(song.key)}</span>${song.rating ? `<span class="rating-badge">${"★".repeat(song.rating)}</span>` : ""}</div>`;
+    box.classList.toggle("settled", settled);
+    if (settled) {
+      box.onclick = () => {
+        $("rouletteModal").classList.add("hidden");
+        openEdit(song.id);
+      };
+    } else {
+      box.onclick = null;
+    }
+  }
+
+  function spinRoulette() {
+    const pool = filteredSongs();
+    if (pool.length === 0) { toast("対象の曲がありません"); return; }
+    $("rouletteModal").classList.remove("hidden");
+    clearInterval(rouletteTimer);
+    const target = pool[Math.floor(Math.random() * pool.length)];
+    if (pool.length === 1) { renderRoulettePick(target, true); return; }
+    let n = 0;
+    rouletteTimer = setInterval(() => {
+      n++;
+      if (n >= 10) {
+        clearInterval(rouletteTimer);
+        renderRoulettePick(target, true);
+      } else {
+        renderRoulettePick(pool[Math.floor(Math.random() * pool.length)], false);
+      }
+    }, 70);
+  }
+
   // ---------- 共有 ----------
   function b64url(u8) {
     let s = "";
@@ -739,13 +883,20 @@
 
   function showReceive(list) {
     receivedSongs = list;
-    $("receiveInfo").textContent = `${list.length}曲が共有されました`;
+    const mine = new Set(songs.map(s => norm(s.title) + "|" + norm(s.artist)));
+    const withFlag = list.map(s => ({ ...s, have: mine.has(norm(s.title) + "|" + norm(s.artist || "")) }));
+    const haveCount = withFlag.filter(s => s.have).length;
+    $("receiveInfo").textContent =
+      `${list.length}曲が共有されました（かぶり${haveCount}曲・新しい曲${list.length - haveCount}曲）`;
     const box = $("receiveList");
     box.innerHTML = "";
-    list.forEach(s => {
+    // 新しい曲を上に、かぶりは下にまとめる
+    [...withFlag].sort((a, b) => Number(a.have) - Number(b.have)).forEach(s => {
       const row = document.createElement("div");
-      row.className = "receive-row";
-      row.innerHTML = `<span class="receive-title">${esc(s.title)}</span><span class="receive-artist">${esc(s.artist)}</span>`;
+      row.className = "receive-row" + (s.have ? " have" : "");
+      row.innerHTML = `
+        <span class="receive-flag ${s.have ? "flag-have" : "flag-new"}">${s.have ? "かぶり" : "NEW"}</span>
+        <span class="receive-title">${esc(s.title)}</span><span class="receive-artist">${esc(s.artist)}</span>`;
       box.appendChild(row);
     });
     $("receiveModal").classList.remove("hidden");
@@ -773,6 +924,7 @@
         tags: Array.isArray(s.tags) ? s.tags.map(String) : [],
         key: Number(s.key) || 0,
         rating: Math.min(3, Math.max(0, Number(s.rating) || 0)),
+        practicing: !!s.practicing,
         memo: String(s.memo || ""),
         scores: Array.isArray(s.scores)
           ? s.scores.filter(x => x && typeof x.score === "number").map(x => ({ score: x.score, date: Number(x.date) || now }))
@@ -902,6 +1054,7 @@
   enableSheetDrag($("settingsModal"), () => $("settingsModal").classList.add("hidden"));
   enableSheetDrag($("shareModal"), () => $("shareModal").classList.add("hidden"));
   enableSheetDrag($("receiveModal"), () => $("receiveModal").classList.add("hidden"));
+  enableSheetDrag($("rouletteModal"), () => { clearInterval(rouletteTimer); $("rouletteModal").classList.add("hidden"); });
 
   // ---------- イベント登録 ----------
   $("searchInput").addEventListener("input", (e) => {
@@ -924,6 +1077,7 @@
     if (onSetlistTab && currentSetlistId) { closeSetlistDetail(); return; }
     switchTab("setlist");
   };
+  $("tabHistory").onclick = () => switchTab("history");
 
   $("btnNewSetlist").onclick = () => {
     const name = prompt("セットリストの名前", defaultListName());
@@ -1005,6 +1159,11 @@
     };
   });
 
+  $("btnPracticing").onclick = () => {
+    editPracticing = !editPracticing;
+    updatePracticingView();
+  };
+
   $("btnAddScore").onclick = addScore;
   $("inputScore").addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); addScore(); }
@@ -1025,6 +1184,20 @@
   $("btnEditToSetlist").onclick = () => {
     if (editingId) openPicker(editingId);
   };
+
+  $("btnYoutube").onclick = () => {
+    const title = $("inputTitle").value.trim();
+    if (!title) { toast("曲名を入力してください"); return; }
+    const q = encodeURIComponent(`${title} ${$("inputArtist").value.trim()}`.trim());
+    window.open(`https://www.youtube.com/results?search_query=${q}`, "_blank", "noopener");
+  };
+
+  $("btnRoulette").onclick = spinRoulette;
+  $("btnSpinAgain").onclick = spinRoulette;
+  $("btnRouletteClose").onclick = () => { clearInterval(rouletteTimer); $("rouletteModal").classList.add("hidden"); };
+  $("rouletteModal").addEventListener("click", (e) => {
+    if (e.target === $("rouletteModal")) { clearInterval(rouletteTimer); $("rouletteModal").classList.add("hidden"); }
+  });
 
   $("btnAddTag").onclick = addNewTag;
   $("inputNewTag").addEventListener("keydown", (e) => {

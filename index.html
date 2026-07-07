@@ -30,6 +30,7 @@
     </div>
     <div class="filter-row">
       <div id="tagFilter" class="tag-scroll"></div>
+      <button id="btnRoulette" class="dice-btn" aria-label="おまかせ選曲">🎲</button>
       <select id="sortSelect" class="sort-select" aria-label="並び替え">
         <option value="new">新しい順</option>
         <option value="old">古い順</option>
@@ -90,10 +91,20 @@
   </div>
 </div>
 
+<!-- 履歴画面 -->
+<div id="historyView" class="hidden">
+  <main id="historyList" class="history-list"></main>
+  <div id="historyEmpty" class="empty-state hidden">
+    <div class="empty-icon">🕒</div>
+    <p>歌った記録はまだありません。<br>セットリストの✓や「今日歌った +1」で記録されます。</p>
+  </div>
+</div>
+
 <!-- 下部タブバー -->
 <nav class="tab-bar">
   <button id="tabList" class="tab-btn active">🎵<span>レパートリー</span></button>
   <button id="tabSetlist" class="tab-btn">📋<span>セットリスト</span><span id="setlistBadge" class="badge hidden"></span></button>
+  <button id="tabHistory" class="tab-btn">🕒<span>履歴</span></button>
 </nav>
 
 <!-- 曲追加・編集モーダル -->
@@ -128,6 +139,11 @@
       </div>
 
       <div class="field">
+        <label>ステータス</label>
+        <button type="button" id="btnPracticing" class="practice-toggle">📖 覚え中（練習中の曲）</button>
+      </div>
+
+      <div class="field">
         <label>得意度</label>
         <div id="ratingStars" class="rating-stars">
           <button type="button" data-star="1">★</button>
@@ -139,6 +155,7 @@
       <div class="field">
         <label>採点スコア</label>
         <div id="bestScore" class="best-score hidden"></div>
+        <div id="scoreChart" class="score-chart hidden"></div>
         <div class="tag-add-row">
           <input type="number" id="inputScore" placeholder="例: 92.5" step="0.1" min="0" max="100" inputmode="decimal">
           <button type="button" id="btnAddScore" class="mini-btn">記録</button>
@@ -171,6 +188,7 @@
         <textarea id="inputMemo" rows="3" placeholder="サビ前で息継ぎ、デンモクの番号 など"></textarea>
       </div>
 
+      <button type="button" id="btnYoutube" class="settings-btn">▶️ YouTubeで練習動画を探す</button>
       <button type="button" id="btnEditToSetlist" class="settings-btn hidden">📋 セットリストに追加…</button>
       <button type="button" id="btnDelete" class="danger-btn hidden">この曲を削除</button>
     </div>
@@ -190,6 +208,23 @@
       <div id="pickerList" class="picker-list"></div>
       <button id="btnPickerNew" class="settings-btn">＋ 新しいセットリストを作って追加</button>
       <p class="hint">タップで追加/解除できます。</p>
+    </div>
+  </div>
+</div>
+
+<!-- おまかせ選曲ルーレット -->
+<div id="rouletteModal" class="modal-overlay hidden">
+  <div class="modal sheet">
+    <div class="sheet-handle"></div>
+    <div class="modal-header">
+      <span></span>
+      <h2>🎲 おまかせ選曲</h2>
+      <button id="btnRouletteClose" class="text-btn primary">閉じる</button>
+    </div>
+    <div class="modal-body">
+      <div id="rouletteResult" class="roulette-result"></div>
+      <button id="btnSpinAgain" class="settings-btn">🎲 もう一回</button>
+      <p class="hint">今の検索・タグ絞り込みの中から選ばれます。曲をタップすると編集画面が開きます。</p>
     </div>
   </div>
 </div>
