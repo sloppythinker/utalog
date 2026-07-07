@@ -572,6 +572,13 @@
     arrows.className = "suggest-arrows";
     const list = document.createElement("div");
     list.className = "suggest-list";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "✕";
+    close.className = "suggest-close";
+    close.setAttribute("aria-label", "候補を閉じる");
+    close.onclick = () => { box.classList.add("hidden"); box.innerHTML = ""; };
+    arrows.appendChild(close);
     [["▲", -1], ["▼", 1]].forEach(([label, dir]) => {
       const b = document.createElement("button");
       b.type = "button";
@@ -1020,6 +1027,19 @@
     const term = e.target.value.trim();
     if (term.length < 1) { hideSuggest(); return; }
     artistSuggestTimer = setTimeout(() => showArtistSuggest(term), 350);
+  });
+
+  // 候補リストの外側をタップしたら閉じる（候補が邪魔で他の欄に入力できない対策）
+  document.addEventListener("pointerdown", (e) => {
+    const wrap = e.target.closest(".suggest-wrap");
+    ["suggestBox", "suggestBoxArtist"].forEach(id => {
+      const box = $(id);
+      if (box.classList.contains("hidden")) return;
+      if (!wrap || !wrap.contains(box)) {
+        box.classList.add("hidden");
+        box.innerHTML = "";
+      }
+    });
   });
 
   $("btnSettings").onclick = openSettings;

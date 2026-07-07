@@ -415,8 +415,9 @@ html, body {
   font-size: 15px;
   cursor: pointer;
 }
-.suggest-arrows button:first-child { border-bottom: 1px solid var(--border); }
+.suggest-arrows button + button { border-top: 1px solid var(--border); }
 .suggest-arrows button:active { background: var(--bg-elev); color: var(--accent); }
+.suggest-arrows .suggest-close { color: var(--accent); }
 
 .suggest-list {
   flex: 1;

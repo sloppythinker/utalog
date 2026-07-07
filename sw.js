@@ -1,4 +1,4 @@
-const CACHE = "utalog-v7";
+const CACHE = "utalog-v8";
 const ASSETS = [
   "./",
   "./index.html",
