@@ -327,7 +327,18 @@
       const total = [...m.values()].reduce((a, b) => a + b, 0);
       const head = document.createElement("div");
       head.className = "history-date";
-      head.textContent = `${fmtDate(day)}（${youbi[new Date(day).getDay()]}）・${total}曲`;
+      head.innerHTML = `
+        <span>${fmtDate(day)}（${youbi[new Date(day).getDay()]}）・${total}曲</span>
+        <button class="history-replay">📋 セットに</button>`;
+      head.querySelector(".history-replay").onclick = () => {
+        const defName = `${fmtDate(day)}の再演リスト`;
+        const name = prompt("セットリスト名", defName);
+        if (name === null) return;
+        const list = createSetlist(name.trim() || defName);
+        list.items = [...m.keys()].filter(id => songs.some(s => s.id === id)).map(id => ({ id, done: false }));
+        saveSetlists();
+        toast(`「${list.name}」を作成しました（${list.items.length}曲）`);
+      };
       box.appendChild(head);
       m.forEach((count, id) => {
         const song = songs.find(s => s.id === id);
@@ -393,11 +404,51 @@
     });
   }
 
+  const KANA_ROWS = ["あ", "か", "さ", "た", "な", "は", "ま", "や", "ら", "わ", "英", "他"];
+
+  function kanaRowOf(s) {
+    const ch = norm((s || "").normalize("NFKC")).trim().charAt(0);
+    if (!ch) return "他";
+    if (/[a-z0-9]/.test(ch)) return "英";
+    const c = ch.charCodeAt(0);
+    if (c === 0x30f4) return "あ"; // ヴ
+    if (c === 0x30f5 || c === 0x30f6) return "か"; // ヵヶ
+    const ranges = [
+      ["あ", 0x30a1, 0x30aa], ["か", 0x30ab, 0x30b4], ["さ", 0x30b5, 0x30be],
+      ["た", 0x30bf, 0x30c9], ["な", 0x30ca, 0x30ce], ["は", 0x30cf, 0x30dd],
+      ["ま", 0x30de, 0x30e2], ["や", 0x30e3, 0x30e8], ["ら", 0x30e9, 0x30ed],
+      ["わ", 0x30ee, 0x30f3],
+    ];
+    for (const [row, lo, hi] of ranges) if (c >= lo && c <= hi) return row;
+    return "他";
+  }
+
+  function updateKanaJump(list) {
+    const bar = $("kanaJump");
+    const active = (sortMode === "title" || sortMode === "artist") && list.length > 0;
+    bar.classList.toggle("hidden", !active);
+    if (!active) { bar.innerHTML = ""; return; }
+    const present = new Set(list.map(s => kanaRowOf(sortMode === "artist" ? s.artist : s.title)));
+    bar.innerHTML = "";
+    KANA_ROWS.forEach(row => {
+      const b = document.createElement("button");
+      b.textContent = row;
+      b.disabled = !present.has(row);
+      b.onclick = () => {
+        const target = [...document.querySelectorAll("#songList .song-card")]
+          .find(c => c.dataset.kana === row);
+        if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
+      bar.appendChild(b);
+    });
+  }
+
   function renderList() {
     const list = filteredSongs();
     const box = $("songList");
     box.innerHTML = "";
     const empty = $("emptyState");
+    updateKanaJump(list);
     if (list.length === 0) {
       empty.classList.remove("hidden");
       $("emptyMessage").innerHTML = songs.length === 0
@@ -410,6 +461,7 @@
     list.forEach(song => {
       const card = document.createElement("div");
       card.className = "song-card";
+      card.dataset.kana = kanaRowOf(sortMode === "artist" ? song.artist : song.title);
       const art = song.artworkUrl
         ? `<img class="song-art" src="${esc(song.artworkUrl)}" alt="" loading="lazy" onerror="this.outerHTML='<div class=\'song-art placeholder\'>🎵</div>'">`
         : `<div class="song-art placeholder">🎵</div>`;
@@ -776,6 +828,84 @@
     buildSuggestBox(box, rows, "歌手名の候補");
   }
 
+  // ---------- 統計 ----------
+  function renderStats() {
+    const body = $("statsBody");
+    const sungTotal = songs.reduce((n, s) => n + sungCountOf(s), 0);
+    const practicing = songs.filter(s => s.practicing).length;
+
+    // よく歌う曲 TOP5
+    const topSongs = [...songs].filter(s => sungCountOf(s) > 0)
+      .sort((a, b) => sungCountOf(b) - sungCountOf(a)).slice(0, 5);
+    const maxSung = topSongs.length ? sungCountOf(topSongs[0]) : 1;
+
+    // 月別歌唱回数（直近6ヶ月）
+    const months = [];
+    const now = new Date();
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.push({ y: d.getFullYear(), m: d.getMonth(), label: `${d.getMonth() + 1}月`, count: 0 });
+    }
+    songs.forEach(s => (s.sungDates || []).forEach(ts => {
+      const d = new Date(ts);
+      const slot = months.find(x => x.y === d.getFullYear() && x.m === d.getMonth());
+      if (slot) slot.count++;
+    }));
+    const maxMonth = Math.max(1, ...months.map(x => x.count));
+
+    // ベストスコア TOP3
+    const topScores = [...songs].filter(s => bestScore(s) !== null)
+      .sort((a, b) => bestScore(b) - bestScore(a)).slice(0, 3);
+
+    // タグ分布 TOP6
+    const tagCounts = new Map();
+    songs.forEach(s => (s.tags || []).forEach(t => tagCounts.set(t, (tagCounts.get(t) || 0) + 1)));
+    const topTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+
+    const bar = (label, count, max, suffix) => `
+      <div class="stat-bar-row">
+        <span class="stat-bar-label">${esc(label)}</span>
+        <div class="stat-bar-track"><div class="stat-bar-fill" style="width:${Math.max(3, Math.round(count / max * 100))}%"></div></div>
+        <span class="stat-bar-count">${count}${suffix}</span>
+      </div>`;
+
+    body.innerHTML = `
+      <div class="stat-summary">
+        <div class="stat-cell"><strong>${songs.length}</strong><span>曲</span></div>
+        <div class="stat-cell"><strong>${sungTotal}</strong><span>累計歌唱</span></div>
+        <div class="stat-cell"><strong>${allTags().length}</strong><span>タグ</span></div>
+        <div class="stat-cell"><strong>${practicing}</strong><span>覚え中</span></div>
+      </div>
+      <div class="settings-group">
+        <h3>よく歌う曲 TOP5</h3>
+        ${topSongs.length ? topSongs.map(s => bar(s.title, sungCountOf(s), maxSung, "回")).join("") : `<p class="hint">まだ歌唱記録がありません。</p>`}
+      </div>
+      <div class="settings-group">
+        <h3>月別の歌唱回数（直近6ヶ月）</h3>
+        <div class="stat-months">
+          ${months.map(x => `
+            <div class="stat-month">
+              <span class="stat-month-count">${x.count || ""}</span>
+              <div class="stat-month-bar" style="height:${Math.max(4, Math.round(x.count / maxMonth * 72))}px"></div>
+              <span class="stat-month-label">${x.label}</span>
+            </div>`).join("")}
+        </div>
+      </div>
+      <div class="settings-group">
+        <h3>ベストスコア TOP3</h3>
+        ${topScores.length ? topScores.map((s, i) => `
+          <div class="stat-score-row">
+            <span class="stat-rank">${["🥇", "🥈", "🥉"][i]}</span>
+            <span class="stat-score-title">${esc(s.title)}</span>
+            <strong class="stat-score-val">${bestScore(s)}点</strong>
+          </div>`).join("") : `<p class="hint">まだスコア記録がありません。</p>`}
+      </div>
+      <div class="settings-group">
+        <h3>タグ分布</h3>
+        ${topTags.length ? topTags.map(([t, c]) => bar(t, c, topTags[0][1], "曲")).join("") : `<p class="hint">タグはまだありません。</p>`}
+      </div>`;
+  }
+
   // ---------- おまかせ選曲ルーレット ----------
   let rouletteTimer = null;
 
@@ -1053,6 +1183,7 @@
   enableSheetDrag($("pickerModal"), () => $("pickerModal").classList.add("hidden"));
   enableSheetDrag($("settingsModal"), () => $("settingsModal").classList.add("hidden"));
   enableSheetDrag($("shareModal"), () => $("shareModal").classList.add("hidden"));
+  enableSheetDrag($("statsModal"), () => $("statsModal").classList.add("hidden"));
   enableSheetDrag($("receiveModal"), () => $("receiveModal").classList.add("hidden"));
   enableSheetDrag($("rouletteModal"), () => { clearInterval(rouletteTimer); $("rouletteModal").classList.add("hidden"); });
 
@@ -1249,6 +1380,15 @@
     $("shareResult").classList.add("hidden");
     $("shareModal").classList.remove("hidden");
   };
+  $("btnOpenStats").onclick = () => {
+    $("settingsModal").classList.add("hidden");
+    renderStats();
+    $("statsModal").classList.remove("hidden");
+  };
+  $("btnCloseStats").onclick = () => $("statsModal").classList.add("hidden");
+  $("statsModal").addEventListener("click", (e) => {
+    if (e.target === $("statsModal")) $("statsModal").classList.add("hidden");
+  });
   $("btnCloseShare").onclick = () => $("shareModal").classList.add("hidden");
   $("shareModal").addEventListener("click", (e) => {
     if (e.target === $("shareModal")) $("shareModal").classList.add("hidden");

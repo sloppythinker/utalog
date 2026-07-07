@@ -1168,3 +1168,153 @@ html, body {
 .receive-flag.flag-new { background: var(--accent-grad); color: #fff; }
 .receive-flag.flag-have { background: var(--bg-elev2); color: var(--text-dim); border: 1px solid var(--border); }
 .receive-row .receive-title { flex: 1; }
+
+/* ---------- v11: 統計・再演・50音ジャンプ ---------- */
+.history-date {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.history-replay {
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 10px;
+  border-radius: 999px;
+}
+.history-replay:active { background: var(--bg-elev2); }
+
+.stat-summary {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.stat-cell {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 4px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.stat-cell strong {
+  font-size: 20px;
+  color: var(--accent);
+}
+.stat-cell span {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.stat-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+}
+.stat-bar-label {
+  flex: 0 0 96px;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stat-bar-track {
+  flex: 1;
+  height: 10px;
+  background: var(--bg-elev2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.stat-bar-fill {
+  height: 100%;
+  background: var(--accent-grad);
+  border-radius: 999px;
+}
+.stat-bar-count {
+  flex: 0 0 44px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.stat-months {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 6px;
+  height: 116px;
+  padding: 4px 2px 0;
+}
+.stat-month {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  height: 100%;
+}
+.stat-month-count {
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 700;
+  min-height: 14px;
+}
+.stat-month-bar {
+  width: 60%;
+  max-width: 28px;
+  background: var(--accent-grad);
+  border-radius: 6px 6px 2px 2px;
+}
+.stat-month-label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.stat-score-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+}
+.stat-rank { font-size: 18px; }
+.stat-score-title {
+  flex: 1;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stat-score-val { color: var(--accent); font-size: 15px; }
+
+.kana-jump {
+  position: fixed;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  z-index: 40;
+  background: rgba(18, 16, 28, 0.72);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 1px;
+  backdrop-filter: blur(6px);
+}
+.kana-jump button {
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  width: 26px;
+  padding: 3px 0;
+  line-height: 1;
+}
+.kana-jump button:disabled { color: var(--text-dim); opacity: 0.35; }
+.kana-jump button:active:not(:disabled) { color: var(--accent2); }
+.song-card { scroll-margin-top: calc(118px + var(--safe-top)); }

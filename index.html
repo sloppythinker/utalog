@@ -51,6 +51,7 @@
   </div>
 
   <button id="btnAdd" class="fab" aria-label="曲を追加">＋</button>
+  <div id="kanaJump" class="kana-jump hidden"></div>
 </div>
 
 <!-- セットリスト画面 -->
@@ -212,6 +213,19 @@
   </div>
 </div>
 
+<!-- 統計モーダル -->
+<div id="statsModal" class="modal-overlay hidden">
+  <div class="modal sheet">
+    <div class="sheet-handle"></div>
+    <div class="modal-header">
+      <span></span>
+      <h2>📊 統計</h2>
+      <button id="btnCloseStats" class="text-btn primary">閉じる</button>
+    </div>
+    <div class="modal-body" id="statsBody"></div>
+  </div>
+</div>
+
 <!-- おまかせ選曲ルーレット -->
 <div id="rouletteModal" class="modal-overlay hidden">
   <div class="modal sheet">
@@ -240,6 +254,10 @@
     </div>
     <div class="modal-body">
       <p class="stats" id="statsText"></p>
+      <div class="settings-group">
+        <h3>統計</h3>
+        <button id="btnOpenStats" class="settings-btn">📊 統計を見る</button>
+      </div>
       <div class="settings-group">
         <h3>共有</h3>
         <button id="btnOpenShare" class="settings-btn">🔗 レパートリーを共有</button>
