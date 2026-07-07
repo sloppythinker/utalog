@@ -40,7 +40,8 @@
   function fmtDate(ts) {
     if (!ts) return "";
     const d = new Date(ts);
-    return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+    const p = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())}`;
   }
 
   function allTags() {
@@ -164,14 +165,9 @@
     setlists.forEach(list => {
       const total = list.items.length;
       const done = list.items.filter(x => x.done).length;
-      const first = list.items.map(x => songs.find(s => s.id === x.id)).find(s => s && s.artworkUrl);
-      const thumb = first
-        ? `<img src="${esc(first.artworkUrl)}" alt="" loading="lazy">`
-        : `<div class="pl-thumb-ph">📋</div>`;
       const row = document.createElement("div");
       row.className = "pl-row";
       row.innerHTML = `
-        <div class="pl-thumb">${thumb}<span class="pl-count">${total}曲</span></div>
         <div class="pl-meta">
           <div class="pl-name">${esc(list.name)}</div>
           <div class="pl-sub">${fmtDate(list.createdAt)}作成・${done}/${total}曲 歌った</div>
