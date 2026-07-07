@@ -157,7 +157,7 @@ html, body {
 
 /* ---------- 曲リスト ---------- */
 .song-list {
-  padding: 8px 16px calc(110px + var(--safe-bottom));
+  padding: 8px 16px calc(160px + var(--safe-bottom));
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -258,7 +258,7 @@ html, body {
 .fab {
   position: fixed;
   right: 20px;
-  bottom: calc(24px + var(--safe-bottom));
+  bottom: calc(80px + var(--safe-bottom));
   width: 60px;
   height: 60px;
   border-radius: 50%;
@@ -557,6 +557,258 @@ html, body {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 8px;
+}
+
+/* ---------- タブバー ---------- */
+.tab-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  display: flex;
+  background: rgba(18, 16, 28, 0.95);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-top: 1px solid var(--border);
+  padding-bottom: var(--safe-bottom);
+}
+
+.tab-btn {
+  position: relative;
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 20px;
+  padding: 8px 0 6px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-height: 52px;
+}
+.tab-btn span { font-size: 10px; font-weight: 700; }
+.tab-btn.active { color: var(--accent); }
+
+.badge {
+  position: absolute;
+  top: 4px;
+  right: calc(50% - 26px);
+  background: var(--accent2);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  border-radius: 999px;
+  min-width: 16px;
+  height: 16px;
+  line-height: 16px;
+  padding: 0 4px;
+}
+
+/* ---------- セットリスト ---------- */
+.setlist-head { padding: 12px 16px 0; }
+.setlist-head .hint { text-align: center; margin-bottom: 10px; }
+.setlist-actions { display: flex; gap: 8px; justify-content: center; }
+
+.sl-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+
+.sl-item.done { opacity: 0.55; }
+.sl-item.done .song-title { text-decoration: line-through; }
+
+.sl-check {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: var(--bg);
+  color: #fff;
+  font-size: 16px;
+  cursor: pointer;
+}
+.sl-check.on {
+  background: var(--accent-grad);
+  border-color: transparent;
+}
+
+.sl-info { flex: 1; min-width: 0; cursor: pointer; }
+.sl-info .song-title {
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sl-btns { display: flex; gap: 2px; flex-shrink: 0; }
+.sl-btns button {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 16px;
+  width: 32px;
+  height: 40px;
+  cursor: pointer;
+}
+.sl-remove { color: var(--danger) !important; }
+
+.sl-quick {
+  align-self: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 17px;
+  cursor: pointer;
+  opacity: 0.55;
+}
+.sl-quick.on {
+  opacity: 1;
+  border-color: var(--accent);
+  background: rgba(184, 102, 255, 0.16);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+/* ---------- スコア ---------- */
+.score-badge {
+  background: rgba(255, 207, 95, 0.12);
+  color: #ffcf5f;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.best-score {
+  background: rgba(255, 207, 95, 0.1);
+  border: 1px solid rgba(255, 207, 95, 0.3);
+  color: #ffcf5f;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+.best-score strong { font-size: 18px; }
+
+.tag-add-row input[type="number"] {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 16px;
+  padding: 10px 12px;
+  outline: none;
+  min-width: 0;
+}
+
+.score-history { margin-top: 8px; }
+.score-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.score-row:last-child { border-bottom: none; }
+.score-date { flex: 1; color: var(--text-dim); font-size: 12px; }
+.score-del {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px 8px;
+}
+
+.sung-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.sung-info { font-size: 14px; color: var(--text-dim); }
+
+/* ---------- 共有 ---------- */
+.share-scope {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 16px;
+  padding: 12px;
+  outline: none;
+}
+
+.share-url {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 10px;
+  margin: 12px 0 8px;
+  word-break: break-all;
+  resize: none;
+}
+
+.qr-box {
+  text-align: center;
+  margin-top: 12px;
+}
+.qr-box img {
+  background: #fff;
+  padding: 12px;
+  border-radius: 12px;
+  max-width: 220px;
+  width: 100%;
+  image-rendering: pixelated;
+}
+.qr-box .hint { margin-top: 8px; }
+
+.receive-list {
+  max-height: 40vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 12px;
+}
+.receive-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.receive-row:last-child { border-bottom: none; }
+.receive-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.receive-artist {
+  color: var(--text-dim);
+  font-size: 12px;
+  flex-shrink: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------- トースト ---------- */

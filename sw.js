@@ -1,8 +1,9 @@
-const CACHE = "utalog-v1";
+const CACHE = "utalog-v2";
 const ASSETS = [
   "./",
   "./index.html",
   "./css/style.css",
+  "./js/vendor/qrcode.min.js",
   "./js/db.js",
   "./js/itunes.js",
   "./js/app.js",

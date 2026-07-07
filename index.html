@@ -20,32 +20,59 @@
   <button id="btnSettings" class="icon-btn" aria-label="設定">⚙️</button>
 </header>
 
-<div class="search-area">
-  <div class="search-box">
-    <span class="search-icon">🔍</span>
-    <input type="search" id="searchInput" placeholder="曲名・歌手名で検索" autocomplete="off">
-    <button id="btnClearSearch" class="clear-btn hidden" aria-label="クリア">✕</button>
+<!-- レパートリー画面 -->
+<div id="listView">
+  <div class="search-area">
+    <div class="search-box">
+      <span class="search-icon">🔍</span>
+      <input type="search" id="searchInput" placeholder="曲名・歌手名で検索" autocomplete="off">
+      <button id="btnClearSearch" class="clear-btn hidden" aria-label="クリア">✕</button>
+    </div>
+    <div class="filter-row">
+      <div id="tagFilter" class="tag-scroll"></div>
+      <select id="sortSelect" class="sort-select" aria-label="並び替え">
+        <option value="new">新しい順</option>
+        <option value="old">古い順</option>
+        <option value="title">曲名順</option>
+        <option value="artist">歌手名順</option>
+        <option value="rating">得意順</option>
+        <option value="score">スコア順</option>
+        <option value="gobusata">ご無沙汰順</option>
+      </select>
+    </div>
   </div>
-  <div class="filter-row">
-    <div id="tagFilter" class="tag-scroll"></div>
-    <select id="sortSelect" class="sort-select" aria-label="並び替え">
-      <option value="new">新しい順</option>
-      <option value="old">古い順</option>
-      <option value="title">曲名順</option>
-      <option value="artist">歌手名順</option>
-      <option value="rating">得意順</option>
-    </select>
+
+  <main id="songList" class="song-list"></main>
+
+  <div id="emptyState" class="empty-state hidden">
+    <div class="empty-icon">🎶</div>
+    <p id="emptyMessage">まだ曲が登録されていません。<br>「＋」ボタンから持ち歌を追加しましょう！</p>
+  </div>
+
+  <button id="btnAdd" class="fab" aria-label="曲を追加">＋</button>
+</div>
+
+<!-- セットリスト画面 -->
+<div id="setlistView" class="hidden">
+  <div class="setlist-head">
+    <p class="hint">今日歌う曲を並べて、歌ったらチェック！<br>（レパートリーの各曲の 📋 ボタンで追加できます）</p>
+    <div class="setlist-actions">
+      <button id="btnClearDone" class="mini-btn">✓済みをクリア</button>
+      <button id="btnClearSetlist" class="mini-btn">全てクリア</button>
+    </div>
+  </div>
+  <main id="setlistList" class="song-list"></main>
+  <div id="setlistEmpty" class="empty-state hidden">
+    <div class="empty-icon">📋</div>
+    <p>セットリストは空です。<br>レパートリーの曲の 📋 をタップして追加しましょう。</p>
   </div>
 </div>
 
-<main id="songList" class="song-list"></main>
-
-<div id="emptyState" class="empty-state hidden">
-  <div class="empty-icon">🎶</div>
-  <p id="emptyMessage">まだ曲が登録されていません。<br>「＋」ボタンから持ち歌を追加しましょう！</p>
-</div>
-
-<button id="btnAdd" class="fab" aria-label="曲を追加">＋</button>
+<!-- 下部タブバー -->
+<nav class="tab-bar">
+  <button id="tabList" class="tab-btn active">🎵<span>レパートリー</span></button>
+  <button id="tabSetlist" class="tab-btn">📋<span>セットリスト</span><span id="setlistBadge" class="badge hidden"></span></button>
+</nav>
 
 <!-- 曲追加・編集モーダル -->
 <div id="editModal" class="modal-overlay hidden">
@@ -87,6 +114,24 @@
       </div>
 
       <div class="field">
+        <label>採点スコア</label>
+        <div id="bestScore" class="best-score hidden"></div>
+        <div class="tag-add-row">
+          <input type="number" id="inputScore" placeholder="例: 92.5" step="0.1" min="0" max="100" inputmode="decimal">
+          <button type="button" id="btnAddScore" class="mini-btn">記録</button>
+        </div>
+        <div id="scoreHistory" class="score-history"></div>
+      </div>
+
+      <div class="field">
+        <label>歌唱記録</label>
+        <div class="sung-row">
+          <span id="sungInfo" class="sung-info">まだ記録なし</span>
+          <button type="button" id="btnSungToday" class="mini-btn">今日歌った +1</button>
+        </div>
+      </div>
+
+      <div class="field">
         <label>タグ</label>
         <div id="tagPicker" class="tag-picker"></div>
         <div class="tag-add-row">
@@ -100,6 +145,7 @@
         <textarea id="inputMemo" rows="3" placeholder="サビ前で息継ぎ、デンモクの番号 など"></textarea>
       </div>
 
+      <button type="button" id="btnToggleSetlist" class="settings-btn hidden">📋 セットリストに追加</button>
       <button type="button" id="btnDelete" class="danger-btn hidden">この曲を削除</button>
     </div>
   </div>
@@ -117,6 +163,11 @@
     <div class="modal-body">
       <p class="stats" id="statsText"></p>
       <div class="settings-group">
+        <h3>共有</h3>
+        <button id="btnOpenShare" class="settings-btn">🔗 レパートリーを共有</button>
+        <p class="hint">曲リストをリンクやQRコードにして友だちに渡せます（キー・タグ込み、メモとスコアは含みません）。</p>
+      </div>
+      <div class="settings-group">
         <h3>バックアップ</h3>
         <button id="btnExport" class="settings-btn">📤 JSONエクスポート</button>
         <button id="btnImport" class="settings-btn">📥 JSONインポート</button>
@@ -132,8 +183,54 @@
   </div>
 </div>
 
+<!-- 共有モーダル -->
+<div id="shareModal" class="modal-overlay hidden">
+  <div class="modal sheet">
+    <div class="sheet-handle"></div>
+    <div class="modal-header">
+      <span></span>
+      <h2>レパートリー共有</h2>
+      <button id="btnCloseShare" class="text-btn primary">閉じる</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="shareScope">共有する範囲</label>
+        <select id="shareScope" class="share-scope">
+          <option value="all">全曲</option>
+          <option value="filtered">今の絞り込み結果</option>
+        </select>
+      </div>
+      <button id="btnMakeShare" class="settings-btn">🔗 共有リンクを作成</button>
+      <div id="shareResult" class="hidden">
+        <textarea id="shareUrl" class="share-url" rows="3" readonly></textarea>
+        <button id="btnCopyShare" class="settings-btn">📋 リンクをコピー</button>
+        <button id="btnNativeShare" class="settings-btn hidden">📱 共有…（LINE・メール等）</button>
+        <div id="qrBox" class="qr-box"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 共有受け取りモーダル -->
+<div id="receiveModal" class="modal-overlay hidden">
+  <div class="modal sheet">
+    <div class="sheet-handle"></div>
+    <div class="modal-header">
+      <button id="btnCloseReceive" class="text-btn">閉じる</button>
+      <h2>共有されたリスト</h2>
+      <button id="btnImportReceive" class="text-btn primary">取り込む</button>
+    </div>
+    <div class="modal-body">
+      <p class="stats" id="receiveInfo"></p>
+      <div id="receiveList" class="receive-list"></div>
+      <p class="hint">「取り込む」で自分のレパートリーに追加されます（同じ曲名+歌手名はスキップ）。</p>
+    </div>
+  </div>
+</div>
+
 <div id="toast" class="toast hidden"></div>
 
+<script src="js/vendor/qrcode.min.js"></script>
 <script src="js/db.js"></script>
 <script src="js/itunes.js"></script>
 <script src="js/app.js"></script>
