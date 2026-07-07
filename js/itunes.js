@@ -1,7 +1,8 @@
 // 曲名・歌手名サジェスト検索
 // 基本は iTunes Search API (fetch)。iPhone Safari はUA判定で musics:// へ
-// リダイレクトされ失敗するため、失敗時は Deezer API (JSONP、UA判定なし) に
-// フォールバックする。
+// リダイレクトされ失敗するため、失敗時は Deezer API (JSONP) にフォールバック。
+// ただし Deezer はモバイルUAだと日本語の部分一致検索が0件になるため、
+// 最終フォールバックとして MusicBrainz (CORS対応・UA判定なし) を使う。
 const ITunes = (() => {
   let seq = 0;
 
@@ -59,16 +60,34 @@ const ITunes = (() => {
     if (!term.trim()) return [];
     try {
       const data = await fetchJson(itunesUrl({ term, entity: "song", limit: String(limit * 3) }));
-      return (data.results || []).map(mapItunesSong).filter(r => r.title);
+      const out = (data.results || []).map(mapItunesSong).filter(r => r.title);
+      if (out.length) return out;
     } catch (e) { /* iPhone Safari等 */ }
     try {
       const data = await jsonp("https://api.deezer.com/search?" +
         new URLSearchParams({ q: term, limit: String(limit * 3) }));
-      return (data.data || []).map(t => ({
+      const out = (data.data || []).map(t => ({
         title: t.title || "",
         artist: (t.artist && t.artist.name) || "",
         artworkUrl: (t.album && (t.album.cover_medium || t.album.cover)) || "",
       })).filter(r => r.title);
+      if (out.length) return out;
+    } catch (e) { /* フォールバックへ */ }
+    try {
+      const data = await fetchJson("https://musicbrainz.org/ws/2/recording?" +
+        new URLSearchParams({ query: term, fmt: "json", limit: String(limit * 3) }));
+      const seen = new Set();
+      const out = [];
+      for (const r of data.recordings || []) {
+        const title = r.title || "";
+        const artist = (r["artist-credit"] && r["artist-credit"][0] && r["artist-credit"][0].name) || "";
+        if (!title) continue;
+        const k = title + "\n" + artist;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        out.push({ title, artist, artworkUrl: "" });
+      }
+      return out;
     } catch (e) {
       return [];
     }
@@ -88,14 +107,23 @@ const ITunes = (() => {
         out.push({ name, artworkUrl: (r.artworkUrl100 || "").replace("100x100", "200x200") });
         if (out.length >= limit) break;
       }
-      return out;
+      if (out.length) return out;
     } catch (e) { /* iPhone Safari等 */ }
     try {
       const data = await jsonp("https://api.deezer.com/search/artist?" +
         new URLSearchParams({ q: term, limit: String(limit) }));
-      return (data.data || []).map(a => ({
+      const out = (data.data || []).map(a => ({
         name: a.name || "",
         artworkUrl: a.picture_medium || a.picture || "",
+      })).filter(a => a.name);
+      if (out.length) return out;
+    } catch (e) { /* フォールバックへ */ }
+    try {
+      const data = await fetchJson("https://musicbrainz.org/ws/2/artist?" +
+        new URLSearchParams({ query: term, fmt: "json", limit: String(limit) }));
+      return (data.artists || []).map(a => ({
+        name: a.name || "",
+        artworkUrl: "",
       })).filter(a => a.name);
     } catch (e) {
       return [];
