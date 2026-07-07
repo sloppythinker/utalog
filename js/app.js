@@ -20,6 +20,7 @@
   let editScores = [];
   let editSungDates = [];
   let suggestTimer = null;
+  let artistSuggestTimer = null;
 
   // ---------- ユーティリティ ----------
   function keyLabel(k) {
@@ -426,6 +427,14 @@
   async function saveEdit() {
     const title = $("inputTitle").value.trim();
     if (!title) { toast("曲名を入力してください"); return; }
+    // 画像がない場合は歌手名から取得を試みる
+    const artistName = $("inputArtist").value.trim();
+    if (!editArtworkUrl && artistName) {
+      editArtworkUrl = await Promise.race([
+        ITunes.artistImage(artistName),
+        new Promise(r => setTimeout(() => r(""), 5000)),
+      ]) || "";
+    }
     const now = Date.now();
     const base = editingId ? songs.find(s => s.id === editingId) : null;
     const song = {
@@ -544,19 +553,57 @@
     renderTagPicker();
   }
 
-  // ---------- iTunes サジェスト ----------
+  // ---------- 曲名・歌手名サジェスト ----------
+  function normSuggest(s) {
+    return norm((s || "").normalize("NFKC")).replace(/[\s　]/g, "");
+  }
+
   function hideSuggest() {
-    $("suggestBox").classList.add("hidden");
-    $("suggestBox").innerHTML = "";
+    ["suggestBox", "suggestBoxArtist"].forEach(id => {
+      $(id).classList.add("hidden");
+      $(id).innerHTML = "";
+    });
+  }
+
+  // 矢印つきサジェストボックスを構築
+  function buildSuggestBox(box, rows, note) {
+    box.innerHTML = "";
+    const arrows = document.createElement("div");
+    arrows.className = "suggest-arrows";
+    const list = document.createElement("div");
+    list.className = "suggest-list";
+    [["▲", -1], ["▼", 1]].forEach(([label, dir]) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+      b.onclick = () => list.scrollBy({ top: dir * 130, behavior: "smooth" });
+      arrows.appendChild(b);
+    });
+    rows.forEach(row => list.appendChild(row));
+    const noteEl = document.createElement("div");
+    noteEl.className = "suggest-note";
+    noteEl.textContent = note;
+    list.appendChild(noteEl);
+    box.appendChild(arrows);
+    box.appendChild(list);
+    box.classList.remove("hidden");
   }
 
   async function showSuggest(term) {
     const box = $("suggestBox");
-    const results = await ITunes.search(term);
+    let results = await ITunes.search(term);
     if ($("inputTitle").value.trim() !== term) return; // 入力が変わっていたら破棄
-    if (results.length === 0) { hideSuggest(); return; }
-    box.innerHTML = "";
-    results.forEach(r => {
+    // 曲名にマッチする候補だけ残す（歌手名だけの一致は除外）
+    const nt = normSuggest(term);
+    results = results.filter(r => normSuggest(r.title).includes(nt));
+    // 同じ曲名+歌手名の重複を除去
+    const seen = new Set();
+    results = results.filter(r => {
+      const k = normSuggest(r.title) + "\n" + normSuggest(r.artist);
+      return seen.has(k) ? false : (seen.add(k), true);
+    }).slice(0, 8);
+    if (results.length === 0) { $("suggestBox").classList.add("hidden"); return; }
+    const rows = results.map(r => {
       const item = document.createElement("div");
       item.className = "suggest-item";
       item.innerHTML = `
@@ -571,13 +618,37 @@
         editArtworkUrl = r.artworkUrl;
         hideSuggest();
       };
-      box.appendChild(item);
+      return item;
     });
-    const note = document.createElement("div");
-    note.className = "suggest-note";
-    note.textContent = "iTunes検索の候補（そのまま手入力もOK）";
-    box.appendChild(note);
-    box.classList.remove("hidden");
+    buildSuggestBox(box, rows, "曲名の候補（そのまま手入力もOK）");
+  }
+
+  async function showArtistSuggest(term) {
+    const box = $("suggestBoxArtist");
+    let results = await ITunes.searchArtists(term);
+    if ($("inputArtist").value.trim() !== term) return;
+    // 歌手名にマッチするものを優先（マッチゼロなら上位候補をそのまま表示）
+    const nt = normSuggest(term);
+    const matched = results.filter(a => normSuggest(a.name).includes(nt));
+    if (matched.length) results = matched;
+    results = results.slice(0, 6);
+    if (results.length === 0) { box.classList.add("hidden"); return; }
+    const rows = results.map(a => {
+      const item = document.createElement("div");
+      item.className = "suggest-item";
+      item.innerHTML = `
+        <img class="suggest-art" src="${esc(a.artworkUrl)}" alt="" loading="lazy">
+        <div class="suggest-text">
+          <div class="suggest-title">${esc(a.name)}</div>
+        </div>`;
+      item.onclick = () => {
+        $("inputArtist").value = a.name;
+        if (!editArtworkUrl && a.artworkUrl) editArtworkUrl = a.artworkUrl;
+        hideSuggest();
+      };
+      return item;
+    });
+    buildSuggestBox(box, rows, "歌手名の候補");
   }
 
   // ---------- 共有 ----------
@@ -942,6 +1013,13 @@
     const term = e.target.value.trim();
     if (term.length < 1) { hideSuggest(); return; }
     suggestTimer = setTimeout(() => showSuggest(term), 350);
+  });
+
+  $("inputArtist").addEventListener("input", (e) => {
+    clearTimeout(artistSuggestTimer);
+    const term = e.target.value.trim();
+    if (term.length < 1) { hideSuggest(); return; }
+    artistSuggestTimer = setTimeout(() => showArtistSuggest(term), 350);
   });
 
   $("btnSettings").onclick = openSettings;
