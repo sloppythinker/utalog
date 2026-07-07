@@ -713,9 +713,22 @@ html, body {
 .pl-detail-head {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   padding: 10px 12px 0;
 }
+.back-btn {
+  flex-shrink: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 700;
+  padding: 8px 14px;
+  min-height: 40px;
+  cursor: pointer;
+}
+.back-btn:active { background: var(--bg-elev2); }
 .pl-detail-title { flex: 1; min-width: 0; }
 .pl-detail-title h2 {
   font-size: 17px;

@@ -827,7 +827,12 @@
   $("sortSelect").onchange = (e) => { sortMode = e.target.value; renderList(); };
 
   $("tabList").onclick = () => switchTab("list");
-  $("tabSetlist").onclick = () => switchTab("setlist");
+  $("tabSetlist").onclick = () => {
+    // 詳細画面でタブを再タップしたら一覧に戻る
+    const onSetlistTab = !$("setlistView").classList.contains("hidden");
+    if (onSetlistTab && currentSetlistId) { closeSetlistDetail(); return; }
+    switchTab("setlist");
+  };
 
   $("btnNewSetlist").onclick = () => {
     const name = prompt("セットリストの名前", defaultListName());
