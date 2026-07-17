@@ -110,7 +110,7 @@
 
 <!-- 曲追加・編集モーダル -->
 <div id="editModal" class="modal-overlay hidden">
-  <div class="modal sheet">
+  <div class="modal sheet" role="dialog" aria-modal="true" aria-labelledby="editModalTitle">
     <div class="sheet-handle"></div>
     <div class="modal-header">
       <button id="btnCancelEdit" class="text-btn">キャンセル</button>
@@ -198,7 +198,7 @@
 
 <!-- セットリスト選択ピッカー -->
 <div id="pickerModal" class="modal-overlay hidden">
-  <div class="modal sheet">
+  <div class="modal sheet" role="dialog" aria-modal="true" aria-label="セットリストに追加">
     <div class="sheet-handle"></div>
     <div class="modal-header">
       <span></span>
@@ -215,7 +215,7 @@
 
 <!-- 統計モーダル -->
 <div id="statsModal" class="modal-overlay hidden">
-  <div class="modal sheet">
+  <div class="modal sheet" role="dialog" aria-modal="true" aria-label="統計">
     <div class="sheet-handle"></div>
     <div class="modal-header">
       <span></span>
@@ -228,7 +228,7 @@
 
 <!-- おまかせ選曲ルーレット -->
 <div id="rouletteModal" class="modal-overlay hidden">
-  <div class="modal sheet">
+  <div class="modal sheet" role="dialog" aria-modal="true" aria-label="おまかせ選曲">
     <div class="sheet-handle"></div>
     <div class="modal-header">
       <span></span>
@@ -245,7 +245,7 @@
 
 <!-- 設定モーダル -->
 <div id="settingsModal" class="modal-overlay hidden">
-  <div class="modal sheet">
+  <div class="modal sheet" role="dialog" aria-modal="true" aria-label="設定">
     <div class="sheet-handle"></div>
     <div class="modal-header">
       <span></span>
@@ -268,7 +268,14 @@
         <button id="btnExport" class="settings-btn">📤 JSONエクスポート</button>
         <button id="btnImport" class="settings-btn">📥 JSONインポート</button>
         <input type="file" id="importFile" accept=".json,application/json" class="hidden">
-        <p class="hint">機種変更やバックアップ用にデータを書き出し・読み込みできます。インポートは既存データに追加されます（同じ曲名+歌手名はスキップ）。</p>
+        <p id="backupStatus" class="hint"></p>
+        <p class="hint">曲・履歴・セットリストをファイルへ書き出します。インポートは既存データに追加されます（同じ曲名+歌手名はスキップ）。</p>
+      </div>
+      <div class="settings-group">
+        <h3>端末内データ</h3>
+        <button id="btnPersistStorage" class="settings-btn hidden">🛡️ 端末保存を保護</button>
+        <p id="storageStatus" class="hint">保存状態を確認中です…</p>
+        <p class="hint">データはクラウドではなく、この端末内に保存されます。大切なデータは定期的にバックアップしてください。</p>
       </div>
       <div class="settings-group">
         <h3>タグの管理</h3>
@@ -281,7 +288,7 @@
 
 <!-- 共有モーダル -->
 <div id="shareModal" class="modal-overlay hidden">
-  <div class="modal sheet">
+  <div class="modal sheet" role="dialog" aria-modal="true" aria-label="レパートリー共有">
     <div class="sheet-handle"></div>
     <div class="modal-header">
       <span></span>
@@ -309,7 +316,7 @@
 
 <!-- 共有受け取りモーダル -->
 <div id="receiveModal" class="modal-overlay hidden">
-  <div class="modal sheet">
+  <div class="modal sheet" role="dialog" aria-modal="true" aria-label="共有されたリスト">
     <div class="sheet-handle"></div>
     <div class="modal-header">
       <button id="btnCloseReceive" class="text-btn">閉じる</button>
@@ -329,6 +336,7 @@
 <script src="js/vendor/qrcode.min.js"></script>
 <script src="js/db.js"></script>
 <script src="js/itunes.js"></script>
+<script src="js/data.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

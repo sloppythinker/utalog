@@ -9,14 +9,34 @@ const DB = (() => {
     if (dbPromise) return dbPromise;
     dbPromise = new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, DB_VER);
+      let blocked = false;
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains(STORE)) {
           db.createObjectStore(STORE, { keyPath: "id" });
         }
       };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
+      req.onsuccess = () => {
+        const db = req.result;
+        if (blocked) {
+          db.close();
+          return;
+        }
+        db.onversionchange = () => {
+          db.close();
+          dbPromise = null;
+        };
+        resolve(db);
+      };
+      req.onerror = () => {
+        dbPromise = null;
+        reject(req.error || new Error("IndexedDBを開けませんでした"));
+      };
+      req.onblocked = () => {
+        blocked = true;
+        dbPromise = null;
+        reject(new Error("別のタブがデータベースを使用中です。ほかのうたログを閉じて再試行してください"));
+      };
     });
     return dbPromise;
   }
@@ -26,8 +46,19 @@ const DB = (() => {
       const t = db.transaction(STORE, mode);
       const store = t.objectStore(STORE);
       const result = fn(store);
-      t.oncomplete = () => resolve(result);
-      t.onerror = () => reject(t.error);
+      let settled = false;
+      t.oncomplete = () => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      };
+      const fail = () => {
+        if (settled) return;
+        settled = true;
+        reject(t.error || new Error("データの保存に失敗しました"));
+      };
+      t.onerror = fail;
+      t.onabort = fail;
     }));
   }
 
