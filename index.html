@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="うたログ">
@@ -110,7 +110,7 @@
 
 <!-- 曲追加・編集モーダル -->
 <div id="editModal" class="modal-overlay hidden">
-  <div class="modal sheet">
+  <div class="modal sheet" role="dialog" aria-modal="true" aria-labelledby="editModalTitle">
     <div class="sheet-handle"></div>
     <div class="modal-header">
       <button id="btnCancelEdit" class="text-btn">キャンセル</button>
@@ -198,7 +198,7 @@
 
 <!-- セットリスト選択ピッカー -->
 <div id="pickerModal" class="modal-overlay hidden">
-  <div class="modal sheet">
+  <div class="modal sheet" role="dialog" aria-modal="true" aria-label="セットリストに追加">
     <div class="sheet-handle"></div>
     <div class="modal-header">
       <span></span>
@@ -215,7 +215,7 @@
 
 <!-- 統計モーダル -->
 <div id="statsModal" class="modal-overlay hidden">
-  <div class="modal sheet">
+  <div class="modal sheet" role="dialog" aria-modal="true" aria-label="統計">
     <div class="sheet-handle"></div>
     <div class="modal-header">
       <span></span>
@@ -228,7 +228,7 @@
 
 <!-- おまかせ選曲ルーレット -->
 <div id="rouletteModal" class="modal-overlay hidden">
-  <div class="modal sheet">
+  <div class="modal sheet" role="dialog" aria-modal="true" aria-label="おまかせ選曲">
     <div class="sheet-handle"></div>
     <div class="modal-header">
       <span></span>
@@ -245,7 +245,7 @@
 
 <!-- 設定モーダル -->
 <div id="settingsModal" class="modal-overlay hidden">
-  <div class="modal sheet">
+  <div class="modal sheet" role="dialog" aria-modal="true" aria-label="設定">
     <div class="sheet-handle"></div>
     <div class="modal-header">
       <span></span>
@@ -268,12 +268,26 @@
         <button id="btnExport" class="settings-btn">📤 JSONエクスポート</button>
         <button id="btnImport" class="settings-btn">📥 JSONインポート</button>
         <input type="file" id="importFile" accept=".json,application/json" class="hidden">
-        <p class="hint">機種変更やバックアップ用にデータを書き出し・読み込みできます。インポートは既存データに追加されます（同じ曲名+歌手名はスキップ）。</p>
+        <p id="backupStatus" class="hint"></p>
+        <p class="hint">曲・履歴・セットリストをファイルへ書き出します。インポートは既存データに追加されます（同じ曲名+歌手名はスキップ）。</p>
+      </div>
+      <div class="settings-group">
+        <h3>端末内データ</h3>
+        <button id="btnPersistStorage" class="settings-btn hidden">🛡️ 端末保存を保護</button>
+        <p id="storageStatus" class="hint">保存状態を確認中です…</p>
+        <p class="hint">データはクラウドではなく、この端末内に保存されます。大切なデータは定期的にバックアップしてください。</p>
       </div>
       <div class="settings-group">
         <h3>タグの管理</h3>
         <div id="tagManager" class="tag-manager"></div>
         <p class="hint">タグをタップすると削除できます（曲からも外れます）。</p>
+      </div>
+      <div class="settings-group">
+        <h3>診断情報</h3>
+        <p class="hint">曲名などは含めず、直近50件の処理時間とエラー種別だけを端末内に保存します。</p>
+        <pre id="diagnosticOutput" class="diagnostic-output">診断情報はまだありません</pre>
+        <button id="btnCopyDiagnostics" class="settings-btn">📋 診断情報をコピー</button>
+        <button id="btnClearDiagnostics" class="settings-btn">診断情報を消去</button>
       </div>
     </div>
   </div>
@@ -281,7 +295,7 @@
 
 <!-- 共有モーダル -->
 <div id="shareModal" class="modal-overlay hidden">
-  <div class="modal sheet">
+  <div class="modal sheet" role="dialog" aria-modal="true" aria-label="レパートリー共有">
     <div class="sheet-handle"></div>
     <div class="modal-header">
       <span></span>
@@ -309,7 +323,7 @@
 
 <!-- 共有受け取りモーダル -->
 <div id="receiveModal" class="modal-overlay hidden">
-  <div class="modal sheet">
+  <div class="modal sheet" role="dialog" aria-modal="true" aria-label="共有されたリスト">
     <div class="sheet-handle"></div>
     <div class="modal-header">
       <button id="btnCloseReceive" class="text-btn">閉じる</button>
@@ -324,11 +338,12 @@
   </div>
 </div>
 
-<div id="toast" class="toast hidden"></div>
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
 <script src="js/vendor/qrcode.min.js"></script>
 <script src="js/db.js"></script>
 <script src="js/itunes.js"></script>
+<script src="js/data.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

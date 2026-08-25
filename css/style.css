@@ -25,6 +25,36 @@ html, body {
 
 .hidden { display: none !important; }
 
+.diagnostic-output {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.list-more, .receive-more {
+  display: block;
+  margin: 12px auto 24px;
+  width: min(90%, 360px);
+}
+
+.history-limit-note { text-align: center; padding: 16px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .app-header, .tab-bar, .modal-overlay { backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+
 /* ---------- ヘッダー ---------- */
 .app-header {
   position: sticky;
@@ -99,8 +129,8 @@ html, body {
   border: none;
   color: var(--text-dim);
   border-radius: 50%;
-  width: 24px;
-  height: 24px;
+  width: 44px;
+  height: 44px;
   font-size: 12px;
   cursor: pointer;
 }
@@ -133,6 +163,7 @@ html, body {
   cursor: pointer;
   white-space: nowrap;
   transition: all 0.15s;
+  min-height: 44px;
 }
 
 .tag-chip.active {
@@ -153,6 +184,7 @@ html, body {
   outline: none;
   -webkit-appearance: none;
   appearance: none;
+  min-height: 44px;
 }
 
 /* ---------- 曲リスト ---------- */
@@ -444,6 +476,13 @@ html, body {
   border-radius: 6px;
   flex-shrink: 0;
   background: var(--bg);
+}
+
+.suggest-art.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
 }
 
 .suggest-text { min-width: 0; }
@@ -797,8 +836,8 @@ html, body {
 .sl-item.done .song-title { text-decoration: line-through; }
 
 .sl-check {
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   flex-shrink: 0;
   border-radius: 50%;
   border: 2px solid var(--border);
@@ -826,8 +865,8 @@ html, body {
   border: none;
   color: var(--text-dim);
   font-size: 16px;
-  width: 32px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   cursor: pointer;
 }
 .sl-remove { color: var(--danger) !important; }
@@ -835,8 +874,8 @@ html, body {
 .sl-quick {
   align-self: center;
   flex-shrink: 0;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--bg);
@@ -850,6 +889,26 @@ html, body {
   background: rgba(184, 102, 255, 0.16);
   box-shadow: 0 0 0 1px var(--accent) inset;
 }
+
+.song-quick-actions {
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.sung-quick {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 95, 162, 0.5);
+  background: rgba(255, 95, 162, 0.12);
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.sung-quick:disabled { opacity: 0.45; }
 
 /* ---------- スコア ---------- */
 .score-badge {
@@ -1001,6 +1060,20 @@ html, body {
   animation: toastIn 0.2s ease-out;
   max-width: 86vw;
   text-align: center;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.toast-action {
+  min-height: 36px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  flex-shrink: 0;
 }
 
 @keyframes toastIn {
@@ -1075,8 +1148,8 @@ html, body {
 /* ---------- おまかせ選曲 ---------- */
 .dice-btn {
   flex-shrink: 0;
-  width: 38px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-elev);

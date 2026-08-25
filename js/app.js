@@ -1,5 +1,15 @@
 (() => {
   const $ = (id) => document.getElementById(id);
+  const { LIMITS, validateIncomingSongs, validateBackupSetlists, readStreamLimited } = UtaLogData;
+  const BACKUP_VERSION = 2;
+  const LIST_PAGE_SIZE = 100;
+  const HISTORY_DISPLAY_LIMIT = 300;
+  const DIAG_KEY = "utalog-diagnostics";
+  const STORAGE_KEYS = {
+    setlists: "utalog-setlists",
+    oldSetlist: "utalog-setlist",
+    lastBackup: "utalog-last-backup",
+  };
 
   // ---------- 状態 ----------
   let songs = [];
@@ -11,6 +21,10 @@
   let currentSetlistId = null;
   let pickerSongId = null;
   let receivedSongs = null;
+  let listDisplayLimit = LIST_PAGE_SIZE;
+  let searchRenderTimer = null;
+  let titleSuggestController = null;
+  let artistSuggestController = null;
 
   // 編集モーダルの状態
   let editingId = null;   // null = 新規
@@ -21,8 +35,18 @@
   let editArtworkUrl = "";
   let editScores = [];
   let editSungDates = [];
+  let editInitialSnapshot = "";
+  let isSavingEdit = false;
   let suggestTimer = null;
   let artistSuggestTimer = null;
+
+  function diagnostic(type, detail = "") {
+    try {
+      const current = JSON.parse(localStorage.getItem(DIAG_KEY) || "[]");
+      current.push({ at: Date.now(), type, detail: String(detail).slice(0, 160) });
+      localStorage.setItem(DIAG_KEY, JSON.stringify(current.slice(-50)));
+    } catch (_) { /* 診断ログで本処理を止めない */ }
+  }
 
   // ---------- ユーティリティ ----------
   function keyLabel(k) {
@@ -33,6 +57,11 @@
   function norm(s) {
     return (s || "").toLowerCase().replace(/[ぁ-ゖ]/g,
       ch => String.fromCharCode(ch.charCodeAt(0) + 0x60)); // ひらがな→カタカナ
+  }
+
+  // 検索・重複判定・サジェスト共通の正規化（NFKC→小文字→かな統一→空白除去）
+  function normSearch(s) {
+    return norm((s || "").normalize("NFKC")).replace(/[\s　]/g, "");
   }
 
   function bestScore(song) {
@@ -53,26 +82,69 @@
     return [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a));
   }
 
+  // 属性値(src="...")にも使うため、引用符まで含めてエスケープする
+  const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
   function esc(s) {
-    const d = document.createElement("div");
-    d.textContent = s || "";
-    return d.innerHTML;
+    return String(s || "").replace(/[&<>"']/g, ch => ESC_MAP[ch]);
   }
 
+  // アートワーク読込失敗時は音符プレースホルダーへ差し替える（errorはバブルしないためcapture）
+  const ART_CLASSES = ["song-art", "history-art", "roulette-art", "suggest-art"];
+  document.addEventListener("error", (e) => {
+    const img = e.target;
+    if (!img || img.tagName !== "IMG") return;
+    const cls = ART_CLASSES.find(c => img.classList.contains(c));
+    if (!cls) return;
+    const ph = document.createElement("div");
+    ph.className = `${cls} placeholder`;
+    ph.textContent = "🎵";
+    img.replaceWith(ph);
+  }, true);
+
   let toastTimer = null;
-  function toast(msg) {
+  function toast(msg, actionLabel, action) {
     const el = $("toast");
-    el.textContent = msg;
+    el.replaceChildren(document.createTextNode(msg));
+    if (actionLabel && action) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "toast-action";
+      btn.textContent = actionLabel;
+      btn.onclick = async () => {
+        btn.disabled = true;
+        try {
+          await action();
+        } catch (e) {
+          reportError("操作の取り消し", e);
+        }
+      };
+      el.appendChild(btn);
+    }
     el.classList.remove("hidden");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.add("hidden"), 2200);
+    toastTimer = setTimeout(() => el.classList.add("hidden"), action ? 5000 : 2600);
+  }
+
+  function reportError(action, error) {
+    console.error(`[うたログ] ${action}`, error);
+    diagnostic("error", `${action}:${error && error.name ? error.name : "Error"}`);
+    const detail = error && error.name === "QuotaExceededError"
+      ? "端末の空き容量を確認してください"
+      : error && error.message ? error.message : "もう一度お試しください";
+    toast(`${action}に失敗しました: ${detail}`);
   }
 
   // ---------- 歌唱記録（sungDates = 歌った日時の配列） ----------
   function sungCountOf(song) { return (song.sungDates || []).length; }
   function lastSungOf(song) {
     const d = song.sungDates || [];
-    return d.length ? d[d.length - 1] : 0;
+    return d.length ? Math.max(...d) : 0;
+  }
+
+  function historyEntryCount(excludeId = null) {
+    return songs.reduce((total, song) => song.id === excludeId
+      ? total
+      : total + (song.scores || []).length + (song.sungDates || []).length, 0);
   }
 
   function syncSungFields(song) {
@@ -80,20 +152,30 @@
     song.lastSungAt = lastSungOf(song);
   }
 
-  async function recordSung(song) {
-    song.sungDates = song.sungDates || [];
-    song.sungDates.push(Date.now());
-    syncSungFields(song);
-    song.updatedAt = Date.now();
-    await DB.put(song);
+  async function recordSung(song, timestamp = Date.now()) {
+    if ((song.sungDates || []).length >= LIMITS.sungDates) {
+      throw new Error("歌唱履歴が上限に達しています。バックアップ後に古い履歴を整理してください");
+    }
+    if (historyEntryCount() >= LIMITS.totalHistoryEntries) {
+      throw new Error("履歴の合計件数が上限に達しています。バックアップ後に古い履歴を整理してください");
+    }
+    const next = { ...song, sungDates: [...(song.sungDates || []), timestamp], updatedAt: Date.now() };
+    syncSungFields(next);
+    await DB.put(next);
+    Object.assign(song, next);
+    return timestamp;
   }
 
-  async function unrecordSung(song) {
-    song.sungDates = song.sungDates || [];
-    song.sungDates.pop();
-    syncSungFields(song);
-    song.updatedAt = Date.now();
-    await DB.put(song);
+  async function unrecordSung(song, timestamp) {
+    const dates = [...(song.sungDates || [])];
+    const index = Number.isFinite(timestamp) ? dates.lastIndexOf(timestamp) : -1;
+    if (index < 0) return false;
+    dates.splice(index, 1);
+    const next = { ...song, sungDates: dates, updatedAt: Date.now() };
+    syncSungFields(next);
+    await DB.put(next);
+    Object.assign(song, next);
+    return true;
   }
 
   // ---------- 複数セットリスト（localStorage） ----------
@@ -105,40 +187,110 @@
     return `${base}(${n})`;
   }
 
+  function normalizeStoredSetlists(value) {
+    if (!Array.isArray(value)) throw new Error("セットリストの形式が不正です");
+    if (value.length > LIMITS.setlists) throw new Error("セットリスト数が上限を超えています");
+    let totalItems = 0;
+    return value.map((list, listIndex) => {
+      if (!list || typeof list !== "object" || Array.isArray(list)) {
+        throw new Error(`セットリスト${listIndex + 1}の形式が不正です`);
+      }
+      const name = typeof list.name === "string" ? list.name.trim() : "";
+      if (!name || name.length > 10000) {
+        throw new Error(`セットリスト${listIndex + 1}の名前が不正です`);
+      }
+      if (!Array.isArray(list.items) || list.items.length > LIMITS.setlistItems) {
+        throw new Error(`「${name}」の曲数が上限を超えています`);
+      }
+      totalItems += list.items.length;
+      if (totalItems > LIMITS.totalSetlistItems) throw new Error("セットリストの合計曲数が上限を超えています");
+      const items = list.items.map((item, itemIndex) => {
+        if (!item || typeof item !== "object" || typeof item.id !== "string" || !item.id) {
+          throw new Error(`「${name}」の${itemIndex + 1}曲目が不正です`);
+        }
+        const normalized = { id: item.id, done: !!item.done };
+        if (Number.isFinite(item.sungAt) && item.sungAt > 0) normalized.sungAt = item.sungAt;
+        return normalized;
+      });
+      return {
+        id: typeof list.id === "string" && list.id ? list.id : DB.newId(),
+        name,
+        createdAt: Number.isFinite(list.createdAt) && list.createdAt > 0 ? list.createdAt : Date.now(),
+        items,
+      };
+    });
+  }
+
   function loadSetlists() {
-    try { setlists = JSON.parse(localStorage.getItem("utalog-setlists") || "[]"); } catch (e) { setlists = []; }
+    let currentRaw = null;
+    try {
+      currentRaw = localStorage.getItem(STORAGE_KEYS.setlists);
+      setlists = normalizeStoredSetlists(JSON.parse(currentRaw || "[]"));
+    } catch (e) {
+      setlists = [];
+      if (currentRaw) {
+        try { localStorage.setItem(`${STORAGE_KEYS.setlists}-recovery-${Date.now()}`, currentRaw); } catch (_) { /* 退避不能 */ }
+      }
+      reportError("セットリストの読み込み", e);
+    }
     // 旧形式（単一リスト）からの移行
-    const old = localStorage.getItem("utalog-setlist");
+    let old = null;
+    try { old = localStorage.getItem(STORAGE_KEYS.oldSetlist); } catch (e) { reportError("旧セットリストの読み込み", e); }
     if (old !== null) {
       try {
         const items = JSON.parse(old);
         if (Array.isArray(items) && items.length) {
-          setlists.push({ id: DB.newId(), name: defaultListName(), createdAt: Date.now(), items });
+          const migrated = normalizeStoredSetlists([
+            { id: DB.newId(), name: defaultListName(), createdAt: Date.now(), items },
+          ])[0];
+          setlists.push(migrated);
         }
-      } catch (e) { /* 壊れた旧データは破棄 */ }
-      localStorage.removeItem("utalog-setlist");
-      saveSetlists();
+        if (saveSetlists()) localStorage.removeItem(STORAGE_KEYS.oldSetlist);
+      } catch (e) {
+        reportError("旧セットリストの移行", e);
+      }
     }
   }
 
   function saveSetlists() {
-    localStorage.setItem("utalog-setlists", JSON.stringify(setlists));
-    renderSetlistBadge();
+    try {
+      localStorage.setItem(STORAGE_KEYS.setlists, JSON.stringify(setlists));
+      renderSetlistBadge();
+      return true;
+    } catch (e) {
+      reportError("セットリストの保存", e);
+      return false;
+    }
+  }
+
+  function canAddSetlistItems(count) {
+    const total = setlists.reduce((sum, list) => sum + list.items.length, 0);
+    if (total + count <= LIMITS.totalSetlistItems) return true;
+    toast(`セットリスト全体で登録できるのは${LIMITS.totalSetlistItems}曲までです`);
+    return false;
   }
 
   function createSetlist(name) {
-    const list = { id: DB.newId(), name: name || defaultListName(), createdAt: Date.now(), items: [] };
+    if (setlists.length >= LIMITS.setlists) {
+      toast(`セットリストは${LIMITS.setlists}件までです`);
+      return null;
+    }
+    const listName = (name || defaultListName()).trim();
+    if (!listName || listName.length > LIMITS.setlistName) {
+      toast(`セットリスト名は${LIMITS.setlistName}文字以内にしてください`);
+      return null;
+    }
+    const list = { id: DB.newId(), name: listName, createdAt: Date.now(), items: [] };
     setlists.unshift(list);
-    saveSetlists();
+    if (!saveSetlists()) {
+      setlists.shift();
+      return null;
+    }
     return list;
   }
 
   function currentSetlist() {
     return setlists.find(l => l.id === currentSetlistId) || null;
-  }
-
-  function inAnySetlist(songId) {
-    return setlists.some(l => l.items.some(x => x.id === songId));
   }
 
   function renderSetlistBadge() {
@@ -150,9 +302,10 @@
 
   function cleanSetlists() {
     let changed = false;
+    const songIds = new Set(songs.map(s => s.id));
     setlists.forEach(l => {
       const before = l.items.length;
-      l.items = l.items.filter(x => songs.some(s => s.id === x.id));
+      l.items = l.items.filter(x => songIds.has(x.id));
       if (l.items.length !== before) changed = true;
     });
     if (changed) saveSetlists();
@@ -205,11 +358,12 @@
     $("plSub").textContent = `${done}/${list.items.length}曲 歌った`;
 
     const box = $("setlistList");
+    const songsById = new Map(songs.map(song => [song.id, song]));
     box.innerHTML = "";
     $("setlistEmpty").classList.toggle("hidden", list.items.length > 0);
 
     list.items.forEach((item, idx) => {
-      const song = songs.find(s => s.id === item.id);
+      const song = songsById.get(item.id);
       if (!song) return;
       const row = document.createElement("div");
       row.className = "sl-item" + (item.done ? " done" : "");
@@ -225,11 +379,42 @@
           <button class="sl-remove" aria-label="外す">✕</button>
         </div>`;
       const toggleDone = async () => {
-        item.done = !item.done;
-        if (item.done) { await recordSung(song); toast(`「${song.title}」歌った！🎤`); }
-        else { await unrecordSung(song); toast("歌唱記録を取り消しました"); }
-        saveSetlists();
-        renderSetlistDetail();
+        const wasDone = item.done;
+        const previousSungAt = item.sungAt;
+        try {
+          if (!wasDone) {
+            const sungAt = await recordSung(song);
+            item.done = true;
+            item.sungAt = sungAt;
+            if (!saveSetlists()) {
+              await unrecordSung(song, sungAt);
+              item.done = false;
+              delete item.sungAt;
+              return;
+            }
+            toast(`「${song.title}」歌った！🎤`);
+          } else {
+            // 旧データには対応時刻がないため、無関係な履歴を消さず完了状態だけ戻す。
+            const removed = Number.isFinite(previousSungAt)
+              ? await unrecordSung(song, previousSungAt)
+              : false;
+            item.done = false;
+            delete item.sungAt;
+            if (!saveSetlists()) {
+              if (removed) await recordSung(song, previousSungAt);
+              item.done = true;
+              if (Number.isFinite(previousSungAt)) item.sungAt = previousSungAt;
+              return;
+            }
+            toast(removed ? "歌唱記録を取り消しました" : "完了を戻しました（過去の歌唱履歴は残しました）");
+          }
+          renderSetlistDetail();
+        } catch (e) {
+          item.done = wasDone;
+          if (Number.isFinite(previousSungAt)) item.sungAt = previousSungAt;
+          else delete item.sungAt;
+          reportError("歌唱記録の更新", e);
+        }
       };
       row.querySelector(".sl-check").onclick = toggleDone;
       row.querySelectorAll(".sl-move").forEach(b => {
@@ -238,13 +423,19 @@
           const j = idx + dir;
           if (j < 0 || j >= list.items.length) return;
           [list.items[idx], list.items[j]] = [list.items[j], list.items[idx]];
-          saveSetlists();
+          if (!saveSetlists()) {
+            [list.items[idx], list.items[j]] = [list.items[j], list.items[idx]];
+            return;
+          }
           renderSetlistDetail();
         };
       });
       row.querySelector(".sl-remove").onclick = () => {
-        list.items.splice(idx, 1);
-        saveSetlists();
+        const removed = list.items.splice(idx, 1)[0];
+        if (!saveSetlists()) {
+          list.items.splice(idx, 0, removed);
+          return;
+        }
         renderSetlistDetail();
       };
       row.querySelector(".sl-info").onclick = toggleDone;
@@ -276,21 +467,26 @@
         <span class="picker-count">${list.items.length}曲</span>`;
       row.onclick = () => {
         if (member) {
+          const previousItems = list.items;
           list.items = list.items.filter(x => x.id !== pickerSongId);
-          toast(`「${esc0(list.name)}」から外しました`);
+          if (!saveSetlists()) { list.items = previousItems; return; }
+          toast(`「${list.name}」から外しました`);
         } else {
+          if (list.items.length >= LIMITS.setlistItems) {
+            toast(`1つのセットリストは${LIMITS.setlistItems}曲までです`);
+            return;
+          }
+          if (!canAddSetlistItems(1)) return;
           list.items.push({ id: pickerSongId, done: false });
-          toast(`「${esc0(list.name)}」に追加しました`);
+          if (!saveSetlists()) { list.items.pop(); return; }
+          toast(`「${list.name}」に追加しました`);
         }
-        saveSetlists();
         renderPicker();
         renderList();
       };
       box.appendChild(row);
     });
   }
-
-  function esc0(s) { return s; } // toast はtextContentなのでエスケープ不要
 
   // ---------- タブ ----------
   function switchTab(tab) {
@@ -309,17 +505,23 @@
 
   // ---------- 歌った履歴 ----------
   function renderHistory() {
+    const startedAt = performance.now();
     const box = $("historyList");
     box.innerHTML = "";
     const byDay = new Map(); // 日付0時のts → Map(songId → 回数)
-    songs.forEach(s => (s.sungDates || []).forEach(ts => {
+    const events = [];
+    songs.forEach(s => (s.sungDates || []).forEach(ts => events.push({ ts, id: s.id })));
+    events.sort((a, b) => b.ts - a.ts);
+    const visibleEvents = events.slice(0, HISTORY_DISPLAY_LIMIT);
+    visibleEvents.forEach(({ ts, id }) => {
       const d = new Date(ts);
       const key = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
       if (!byDay.has(key)) byDay.set(key, new Map());
       const m = byDay.get(key);
-      m.set(s.id, (m.get(s.id) || 0) + 1);
-    }));
+      m.set(id, (m.get(id) || 0) + 1);
+    });
     const days = [...byDay.keys()].sort((a, b) => b - a);
+    const songsById = new Map(songs.map(song => [song.id, song]));
     $("historyEmpty").classList.toggle("hidden", days.length > 0);
     const youbi = ["日", "月", "火", "水", "木", "金", "土"];
     days.forEach(day => {
@@ -334,14 +536,17 @@
         const defName = `${fmtDate(day)}の再演リスト`;
         const name = prompt("セットリスト名", defName);
         if (name === null) return;
+        const replayItems = [...m.keys()].filter(id => songsById.has(id)).map(id => ({ id, done: false }));
+        if (!canAddSetlistItems(replayItems.length)) return;
         const list = createSetlist(name.trim() || defName);
-        list.items = [...m.keys()].filter(id => songs.some(s => s.id === id)).map(id => ({ id, done: false }));
-        saveSetlists();
+        if (!list) return;
+        list.items = replayItems;
+        if (!saveSetlists()) { list.items = []; return; }
         toast(`「${list.name}」を作成しました（${list.items.length}曲）`);
       };
       box.appendChild(head);
       m.forEach((count, id) => {
-        const song = songs.find(s => s.id === id);
+        const song = songsById.get(id);
         if (!song) return;
         const row = document.createElement("div");
         row.className = "history-row";
@@ -359,13 +564,21 @@
         box.appendChild(row);
       });
     });
+    if (events.length > visibleEvents.length) {
+      const note = document.createElement("p");
+      note.className = "hint history-limit-note";
+      note.textContent = `表示を直近${HISTORY_DISPLAY_LIMIT}件に限定しています（全${events.length}件）`;
+      box.appendChild(note);
+    }
+    const elapsed = Math.round(performance.now() - startedAt);
+    if (elapsed >= 32) diagnostic("render-history", `${elapsed}ms/${visibleEvents.length}`);
   }
 
   // ---------- リスト描画 ----------
   function filteredSongs() {
-    const q = norm(searchQuery);
+    const q = normSearch(searchQuery);
     let list = songs.filter(s => {
-      if (q && !norm(s.title).includes(q) && !norm(s.artist).includes(q)) return false;
+      if (q && !normSearch(s.title).includes(q) && !normSearch(s.artist).includes(q)) return false;
       if (filterPracticing && !s.practicing) return false;
       for (const t of activeTags) if (!(s.tags || []).includes(t)) return false;
       return true;
@@ -444,7 +657,10 @@
   }
 
   function renderList() {
-    const list = filteredSongs();
+    const startedAt = performance.now();
+    const allMatches = filteredSongs();
+    const list = allMatches.slice(0, listDisplayLimit);
+    const setlistSongIds = new Set(setlists.flatMap(setlist => setlist.items.map(item => item.id)));
     const box = $("songList");
     box.innerHTML = "";
     const empty = $("emptyState");
@@ -458,12 +674,13 @@
     }
     empty.classList.add("hidden");
 
+    const fragment = document.createDocumentFragment();
     list.forEach(song => {
       const card = document.createElement("div");
       card.className = "song-card";
       card.dataset.kana = kanaRowOf(sortMode === "artist" ? song.artist : song.title);
       const art = song.artworkUrl
-        ? `<img class="song-art" src="${esc(song.artworkUrl)}" alt="" loading="lazy" onerror="this.outerHTML='<div class=\'song-art placeholder\'>🎵</div>'">`
+        ? `<img class="song-art" src="${esc(song.artworkUrl)}" alt="" loading="lazy">`
         : `<div class="song-art placeholder">🎵</div>`;
       const stars = song.rating ? `<span class="rating-badge">${"★".repeat(song.rating)}</span>` : "";
       const best = bestScore(song);
@@ -484,15 +701,48 @@
           </div>
           ${tags}
         </div>
-        <button class="sl-quick ${inAnySetlist(song.id) ? "on" : ""}" aria-label="セットリストへ">📋</button>`;
+        <div class="song-quick-actions">
+          <button class="sung-quick" aria-label="今日歌った">🎤</button>
+          <button class="sl-quick ${setlistSongIds.has(song.id) ? "on" : ""}" aria-label="セットリストへ">📋</button>
+        </div>`;
       card.onclick = () => openEdit(song.id);
       const q = card.querySelector(".sl-quick");
       q.onclick = (e) => {
         e.stopPropagation();
         openPicker(song.id);
       };
-      box.appendChild(card);
+      const sung = card.querySelector(".sung-quick");
+      sung.onclick = async (e) => {
+        e.stopPropagation();
+        sung.disabled = true;
+        try {
+          const sungAt = await recordSung(song);
+          renderList();
+          toast(`「${song.title}」を歌唱記録に追加しました`, "取り消す", async () => {
+            const removed = await unrecordSung(song, sungAt);
+            if (removed) {
+              renderList();
+              toast("歌唱記録を取り消しました");
+            }
+          });
+        } catch (error) {
+          reportError("歌唱記録の保存", error);
+          sung.disabled = false;
+        }
+      };
+      fragment.appendChild(card);
     });
+    box.appendChild(fragment);
+    if (allMatches.length > list.length) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "settings-btn list-more";
+      more.textContent = `さらに表示（残り${allMatches.length - list.length}曲）`;
+      more.onclick = () => { listDisplayLimit += LIST_PAGE_SIZE; renderList(); };
+      box.appendChild(more);
+    }
+    const elapsed = Math.round(performance.now() - startedAt);
+    if (elapsed >= 32) diagnostic("render-list", `${elapsed}ms/${list.length}`);
   }
 
   function render() {
@@ -502,6 +752,21 @@
   }
 
   // ---------- 曲追加・編集モーダル ----------
+  function currentEditSnapshot() {
+    return JSON.stringify({
+      title: $("inputTitle").value,
+      artist: $("inputArtist").value,
+      memo: $("inputMemo").value,
+      key: editKey,
+      rating: editRating,
+      practicing: editPracticing,
+      tags: [...editTags].sort(),
+      artworkUrl: editArtworkUrl,
+      scores: editScores,
+      sungDates: editSungDates,
+    });
+  }
+
   function openEdit(id) {
     editingId = id || null;
     const song = id ? songs.find(s => s.id === id) : null;
@@ -526,64 +791,107 @@
     renderScoreSection();
     updateSungView();
     renderTagPicker();
+    editInitialSnapshot = currentEditSnapshot();
     $("editModal").classList.remove("hidden");
     if (!song) setTimeout(() => $("inputTitle").focus(), 250);
   }
 
-  function closeEdit() {
+  function closeEdit(force = false) {
+    if (!force && editInitialSnapshot && currentEditSnapshot() !== editInitialSnapshot) {
+      if (!confirm("入力中の変更を破棄しますか？")) return false;
+    }
     $("editModal").classList.add("hidden");
     hideSuggest();
+    editInitialSnapshot = "";
+    return true;
   }
 
   async function saveEdit() {
+    if (isSavingEdit) return;
     const title = $("inputTitle").value.trim();
     if (!title) { toast("曲名を入力してください"); return; }
-    // 画像がない場合は歌手名から取得を試みる
-    const artistName = $("inputArtist").value.trim();
-    if (!editArtworkUrl && artistName) {
-      editArtworkUrl = await Promise.race([
-        ITunes.artistImage(artistName),
-        new Promise(r => setTimeout(() => r(""), 5000)),
-      ]) || "";
+    isSavingEdit = true;
+    const saveButton = $("btnSaveEdit");
+    saveButton.disabled = true;
+    const originalLabel = saveButton.textContent;
+    saveButton.textContent = "保存中…";
+    try {
+      const artistName = $("inputArtist").value.trim();
+      const shouldFetchArtwork = !editArtworkUrl && !!artistName;
+      const now = Date.now();
+      const base = editingId ? songs.find(s => s.id === editingId) : null;
+      const song = {
+        id: editingId || DB.newId(),
+        title,
+        artist: $("inputArtist").value.trim(),
+        artworkUrl: editArtworkUrl,
+        tags: [...editTags],
+        key: editKey,
+        rating: editRating,
+        practicing: editPracticing,
+        memo: $("inputMemo").value.trim(),
+        scores: editScores,
+        sungDates: editSungDates,
+        sungCount: editSungDates.length,
+        lastSungAt: editSungDates.length ? Math.max(...editSungDates) : 0,
+        createdAt: base ? base.createdAt : now,
+        updatedAt: now,
+      };
+      validateIncomingSongs([song]);
+      const nextHistoryCount = (song.scores || []).length + (song.sungDates || []).length;
+      if (historyEntryCount(song.id) + nextHistoryCount > LIMITS.totalHistoryEntries) {
+        throw new Error("履歴の合計件数が上限を超えています");
+      }
+      await DB.put(song);
+      if (base) Object.assign(base, song); else songs.push(song);
+      const wasEditing = !!editingId;
+      closeEdit(true);
+      render();
+      toast(wasEditing ? "更新しました" : `「${title}」を追加しました`);
+      editingId = null;
+      // 画像は保存操作を待たせず、取得できた場合だけ後から追記する。
+      if (shouldFetchArtwork) {
+        ITunes.artistImage(artistName).then(async artworkUrl => {
+          if (!artworkUrl) return;
+          const current = songs.find(item => item.id === song.id);
+          if (!current || current.artworkUrl || current.artist !== artistName) return;
+          const updated = { ...current, artworkUrl, updatedAt: Date.now() };
+          await DB.put(updated);
+          Object.assign(current, updated);
+          renderList();
+        }).catch(error => diagnostic("artwork-failed", error && error.name));
+      }
+    } catch (e) {
+      reportError("曲の保存", e);
+    } finally {
+      isSavingEdit = false;
+      saveButton.disabled = false;
+      saveButton.textContent = originalLabel;
     }
-    const now = Date.now();
-    const base = editingId ? songs.find(s => s.id === editingId) : null;
-    const song = {
-      id: editingId || DB.newId(),
-      title,
-      artist: $("inputArtist").value.trim(),
-      artworkUrl: editArtworkUrl,
-      tags: [...editTags],
-      key: editKey,
-      rating: editRating,
-      practicing: editPracticing,
-      memo: $("inputMemo").value.trim(),
-      scores: editScores,
-      sungDates: editSungDates,
-      sungCount: editSungDates.length,
-      lastSungAt: editSungDates.length ? editSungDates[editSungDates.length - 1] : 0,
-      createdAt: base ? base.createdAt : now,
-      updatedAt: now,
-    };
-    await DB.put(song);
-    if (base) Object.assign(base, song); else songs.push(song);
-    closeEdit();
-    render();
-    toast(editingId ? "更新しました" : `「${title}」を追加しました`);
-    editingId = null;
   }
 
   async function deleteSong() {
     const song = songs.find(s => s.id === editingId);
     if (!song) return;
     if (!confirm(`「${song.title}」を削除しますか？`)) return;
-    await DB.remove(song.id);
-    songs = songs.filter(s => s.id !== song.id);
-    setlists.forEach(l => { l.items = l.items.filter(x => x.id !== song.id); });
-    saveSetlists();
-    closeEdit();
-    render();
-    toast("削除しました");
+    const previousSetlists = structuredClone(setlists);
+    try {
+      await DB.remove(song.id);
+      songs = songs.filter(s => s.id !== song.id);
+      setlists.forEach(l => { l.items = l.items.filter(x => x.id !== song.id); });
+      if (!saveSetlists()) {
+        await DB.put(song);
+        songs.push(song);
+        setlists = previousSetlists;
+        render();
+        throw new Error("セットリストを更新できなかったため削除を取り消しました");
+      }
+      closeEdit(true);
+      render();
+      toast("削除しました");
+    } catch (e) {
+      reportError("曲の削除", e);
+    }
   }
 
   // キー ステッパー
@@ -661,6 +969,7 @@
   }
 
   function addScore() {
+    if (editScores.length >= LIMITS.scores) { toast("スコア履歴が上限に達しています"); return; }
     const v = parseFloat($("inputScore").value);
     if (isNaN(v) || v < 0 || v > 100) { toast("0〜100の点数を入力してください"); return; }
     editScores.push({ score: Math.round(v * 10) / 10, date: Date.now() });
@@ -671,7 +980,7 @@
   // 歌唱記録
   function updateSungView() {
     $("sungInfo").textContent = editSungDates.length
-      ? `${editSungDates.length}回（最終: ${fmtDate(editSungDates[editSungDates.length - 1])}）`
+      ? `${editSungDates.length}回（最終: ${fmtDate(Math.max(...editSungDates))}）`
       : "まだ記録なし";
     $("btnSungUndo").disabled = editSungDates.length === 0;
   }
@@ -702,16 +1011,14 @@
     const input = $("inputNewTag");
     const tag = input.value.trim();
     if (!tag) return;
+    if (tag.length > LIMITS.tag) { toast(`タグは${LIMITS.tag}文字以内にしてください`); return; }
+    if (!editTags.has(tag) && editTags.size >= LIMITS.tags) { toast(`タグは1曲${LIMITS.tags}個までです`); return; }
     editTags.add(tag);
     input.value = "";
     renderTagPicker();
   }
 
   // ---------- 曲名・歌手名サジェスト ----------
-  function normSuggest(s) {
-    return norm((s || "").normalize("NFKC")).replace(/[\s　]/g, "");
-  }
-
   function hideSuggest() {
     ["suggestBox", "suggestBoxArtist"].forEach(id => {
       $(id).classList.add("hidden");
@@ -752,31 +1059,39 @@
 
   async function showSuggest(term) {
     const box = $("suggestBox");
+    if (navigator.onLine === false) {
+      box.textContent = "オフラインのため候補検索を利用できません（手入力は可能です）";
+      box.classList.remove("hidden");
+      return;
+    }
+    if (titleSuggestController) titleSuggestController.abort();
+    titleSuggestController = new AbortController();
+    const options = { signal: titleSuggestController.signal };
     // 歌手名が入力済みなら「歌手名+曲名」でも検索し、その歌手の曲を優先
     const artistTerm = $("inputArtist").value.trim();
     let results;
     if (artistTerm) {
       const [byArtist, plain] = await Promise.all([
-        ITunes.search(artistTerm + " " + term),
-        ITunes.search(term),
+        ITunes.search(artistTerm + " " + term, 8, options),
+        ITunes.search(term, 8, options),
       ]);
       results = byArtist.concat(plain);
     } else {
-      results = await ITunes.search(term);
+      results = await ITunes.search(term, 8, options);
     }
     if ($("inputTitle").value.trim() !== term) return; // 入力が変わっていたら破棄
     // 曲名にマッチする候補だけ残す（歌手名だけの一致は除外）
-    const nt = normSuggest(term);
-    results = results.filter(r => normSuggest(r.title).includes(nt));
-    const na = normSuggest(artistTerm);
+    const nt = normSearch(term);
+    results = results.filter(r => normSearch(r.title).includes(nt));
+    const na = normSearch(artistTerm);
     if (na) {
       results.sort((a, b) =>
-        Number(normSuggest(b.artist).includes(na)) - Number(normSuggest(a.artist).includes(na)));
+        Number(normSearch(b.artist).includes(na)) - Number(normSearch(a.artist).includes(na)));
     }
     // 同じ曲名+歌手名の重複を除去
     const seen = new Set();
     results = results.filter(r => {
-      const k = normSuggest(r.title) + "\n" + normSuggest(r.artist);
+      const k = normSearch(r.title) + "\n" + normSearch(r.artist);
       return seen.has(k) ? false : (seen.add(k), true);
     }).slice(0, 8);
     if (results.length === 0) { $("suggestBox").classList.add("hidden"); return; }
@@ -802,11 +1117,18 @@
 
   async function showArtistSuggest(term) {
     const box = $("suggestBoxArtist");
-    let results = await ITunes.searchArtists(term);
+    if (navigator.onLine === false) {
+      box.textContent = "オフラインのため候補検索を利用できません（手入力は可能です）";
+      box.classList.remove("hidden");
+      return;
+    }
+    if (artistSuggestController) artistSuggestController.abort();
+    artistSuggestController = new AbortController();
+    let results = await ITunes.searchArtists(term, 6, { signal: artistSuggestController.signal });
     if ($("inputArtist").value.trim() !== term) return;
     // 歌手名にマッチするものを優先（マッチゼロなら上位候補をそのまま表示）
-    const nt = normSuggest(term);
-    const matched = results.filter(a => normSuggest(a.name).includes(nt));
+    const nt = normSearch(term);
+    const matched = results.filter(a => normSearch(a.name).includes(nt));
     if (matched.length) results = matched;
     results = results.slice(0, 6);
     if (results.length === 0) { box.classList.add("hidden"); return; }
@@ -952,19 +1274,30 @@
   // ---------- 共有 ----------
   function b64url(u8) {
     let s = "";
-    u8.forEach(b => s += String.fromCharCode(b));
+    const chunkSize = 0x8000;
+    for (let i = 0; i < u8.length; i += chunkSize) {
+      s += String.fromCharCode(...u8.subarray(i, i + chunkSize));
+    }
     return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   }
 
   function b64urlDecode(str) {
+    if (!str || str.length > LIMITS.encodedShareChars || !/^[A-Za-z0-9_-]+$/.test(str)) {
+      throw new Error("共有データの文字列が不正です");
+    }
     str = str.replace(/-/g, "+").replace(/_/g, "/");
+    str += "=".repeat((4 - str.length % 4) % 4);
     const bin = atob(str);
     return Uint8Array.from(bin, c => c.charCodeAt(0));
   }
 
   async function encodeShare(list) {
+    if (!Array.isArray(list) || list.length > LIMITS.shareSongs) {
+      throw new Error(`共有できるのは${LIMITS.shareSongs}曲までです`);
+    }
     const compact = list.map(s => [s.title, s.artist || "", s.key || 0, s.tags || []]);
     const bytes = new TextEncoder().encode(JSON.stringify(compact));
+    if (bytes.byteLength > LIMITS.shareBytes) throw new Error("共有データが大きすぎます");
     if (typeof CompressionStream !== "undefined") {
       const cs = new CompressionStream("deflate-raw");
       const buf = await new Response(new Blob([bytes]).stream().pipeThrough(cs)).arrayBuffer();
@@ -974,103 +1307,156 @@
   }
 
   async function decodeShare(hashVal) {
+    if (typeof hashVal !== "string" || hashVal.length < 3 || hashVal[1] !== ".") {
+      throw new Error("共有リンクの形式が不正です");
+    }
     const mode = hashVal[0];
+    if (mode !== "0" && mode !== "1") throw new Error("未対応の共有形式です");
     let bytes = b64urlDecode(hashVal.slice(2));
     if (mode === "1") {
+      if (typeof DecompressionStream === "undefined") {
+        throw new Error("このブラウザは圧縮共有リンクに対応していません");
+      }
       const ds = new DecompressionStream("deflate-raw");
-      bytes = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(ds)).arrayBuffer());
+      bytes = await readStreamLimited(new Blob([bytes]).stream().pipeThrough(ds), LIMITS.shareBytes);
     }
+    if (bytes.byteLength > LIMITS.shareBytes) throw new Error("共有データが大きすぎます");
     const compact = JSON.parse(new TextDecoder().decode(bytes));
-    return compact.map(([title, artist, key, tags]) => ({
-      title: String(title), artist: String(artist || ""),
-      key: Number(key) || 0, tags: Array.isArray(tags) ? tags.map(String) : [],
+    if (!Array.isArray(compact) || compact.length > LIMITS.shareSongs) {
+      throw new Error("共有された曲数が上限を超えています");
+    }
+    const expanded = compact.map((row, index) => {
+      if (!Array.isArray(row) || row.length < 1 || row.length > 4) {
+        throw new Error(`${index + 1}曲目の共有形式が不正です`);
+      }
+      return { title: row[0], artist: row[1] || "", key: row[2] ?? 0, tags: row[3] || [] };
+    });
+    return validateIncomingSongs(expanded, LIMITS.shareSongs).map(song => ({
+      title: song.title,
+      artist: song.artist,
+      key: song.key,
+      tags: song.tags,
     }));
   }
 
   async function makeShare() {
-    const list = $("shareScope").value === "filtered" ? filteredSongs() : songs;
-    if (list.length === 0) { toast("共有する曲がありません"); return; }
-    const hash = await encodeShare(list);
-    const url = location.origin + location.pathname + "#share=" + hash;
-    $("shareUrl").value = url;
-    $("shareResult").classList.remove("hidden");
-    $("btnNativeShare").classList.toggle("hidden", !navigator.share);
-    const qrBox = $("qrBox");
-    qrBox.innerHTML = "";
-    if (url.length <= 1800 && typeof qrcode !== "undefined") {
-      try {
-        const qr = qrcode(0, "L");
-        qr.addData(url);
-        qr.make();
-        qrBox.innerHTML = qr.createImgTag(4, 8);
-        qrBox.insertAdjacentHTML("beforeend", `<p class="hint">QRコードを読み取ってもらえばそのまま開けます</p>`);
-      } catch (e) { /* データ過多でQR生成失敗時はリンクのみ */ }
-    } else {
-      qrBox.innerHTML = `<p class="hint">曲数が多いためQRコードは省略されました。リンクをコピーして送ってください。</p>`;
+    const button = $("btnMakeShare");
+    button.disabled = true;
+    try {
+      const list = $("shareScope").value === "filtered" ? filteredSongs() : songs;
+      if (list.length === 0) { toast("共有する曲がありません"); return; }
+      const hash = await encodeShare(list);
+      const url = location.origin + location.pathname + "#share=" + hash;
+      $("shareUrl").value = url;
+      $("shareResult").classList.remove("hidden");
+      $("btnNativeShare").classList.toggle("hidden", !navigator.share);
+      const qrBox = $("qrBox");
+      qrBox.innerHTML = "";
+      if (url.length <= 1000 && typeof qrcode !== "undefined") {
+        try {
+          const qr = qrcode(0, "L");
+          qr.addData(url);
+          qr.make();
+          qrBox.innerHTML = qr.createImgTag(4, 8);
+          qrBox.insertAdjacentHTML("beforeend", `<p class="hint">QRコードを読み取ってもらえばそのまま開けます</p>`);
+        } catch (e) {
+          qrBox.innerHTML = `<p class="hint">QRコードを作成できませんでした。リンクをコピーして送ってください。</p>`;
+        }
+      } else {
+        qrBox.innerHTML = `<p class="hint">曲数が多いためQRコードは省略されました。リンクをコピーして送ってください。</p>`;
+      }
+      toast(`${list.length}曲の共有リンクを作成しました`);
+    } catch (e) {
+      reportError("共有リンクの作成", e);
+    } finally {
+      button.disabled = false;
     }
-    toast(`${list.length}曲の共有リンクを作成しました`);
   }
 
   function showReceive(list) {
     receivedSongs = list;
-    const mine = new Set(songs.map(s => norm(s.title) + "|" + norm(s.artist)));
-    const withFlag = list.map(s => ({ ...s, have: mine.has(norm(s.title) + "|" + norm(s.artist || "")) }));
+    const mine = new Set(songs.map(s => normSearch(s.title) + "|" + normSearch(s.artist)));
+    const withFlag = list.map(s => ({ ...s, have: mine.has(normSearch(s.title) + "|" + normSearch(s.artist || "")) }));
     const haveCount = withFlag.filter(s => s.have).length;
     $("receiveInfo").textContent =
       `${list.length}曲が共有されました（かぶり${haveCount}曲・新しい曲${list.length - haveCount}曲）`;
     const box = $("receiveList");
     box.innerHTML = "";
-    // 新しい曲を上に、かぶりは下にまとめる
-    [...withFlag].sort((a, b) => Number(a.have) - Number(b.have)).forEach(s => {
+    // 新しい曲を上に、かぶりは下にまとめ、端末を止めないよう段階表示する。
+    const ordered = [...withFlag].sort((a, b) => Number(a.have) - Number(b.have));
+    let shown = 0;
+    const appendNext = () => {
+      const fragment = document.createDocumentFragment();
+      ordered.slice(shown, shown + LIST_PAGE_SIZE).forEach(s => {
       const row = document.createElement("div");
       row.className = "receive-row" + (s.have ? " have" : "");
       row.innerHTML = `
         <span class="receive-flag ${s.have ? "flag-have" : "flag-new"}">${s.have ? "かぶり" : "NEW"}</span>
         <span class="receive-title">${esc(s.title)}</span><span class="receive-artist">${esc(s.artist)}</span>`;
-      box.appendChild(row);
-    });
+        fragment.appendChild(row);
+      });
+      shown = Math.min(shown + LIST_PAGE_SIZE, ordered.length);
+      box.querySelector(".receive-more")?.remove();
+      if (shown < ordered.length) {
+        const more = document.createElement("button");
+        more.type = "button";
+        more.className = "settings-btn receive-more";
+        more.textContent = `さらに表示（残り${ordered.length - shown}曲）`;
+        more.onclick = appendNext;
+        fragment.appendChild(more);
+      }
+      box.appendChild(fragment);
+    };
+    appendNext();
     $("receiveModal").classList.remove("hidden");
   }
 
   // ---------- インポート（共通マージ処理） ----------
   async function mergeSongs(incoming) {
-    const existingKeys = new Set(songs.map(s => norm(s.title) + "|" + norm(s.artist)));
+    const validated = validateIncomingSongs(incoming);
+    const existingByKey = new Map(songs.map(s => [normSearch(s.title) + "|" + normSearch(s.artist), s.id]));
     const now = Date.now();
     const added = [];
-    incoming.forEach((s, i) => {
-      if (!s || !s.title) return;
-      const k = norm(s.title) + "|" + norm(s.artist || "");
-      if (existingKeys.has(k)) return;
-      existingKeys.add(k);
-      let sungDates = Array.isArray(s.sungDates) ? s.sungDates.filter(x => typeof x === "number") : [];
-      if (!sungDates.length && Number(s.sungCount) > 0) {
-        sungDates = Array(Number(s.sungCount)).fill(Number(s.lastSungAt) || now);
+    const sourceIdMap = new Map();
+    let duplicateCount = 0;
+    validated.forEach((s, i) => {
+      const k = normSearch(s.title) + "|" + normSearch(s.artist);
+      const existingId = existingByKey.get(k);
+      if (existingId) {
+        duplicateCount++;
+        if (s.sourceId) sourceIdMap.set(s.sourceId, existingId);
+        return;
       }
       const song = {
         id: DB.newId(),
-        title: String(s.title),
-        artist: String(s.artist || ""),
-        artworkUrl: String(s.artworkUrl || ""),
-        tags: Array.isArray(s.tags) ? s.tags.map(String) : [],
-        key: Number(s.key) || 0,
-        rating: Math.min(3, Math.max(0, Number(s.rating) || 0)),
-        practicing: !!s.practicing,
-        memo: String(s.memo || ""),
-        scores: Array.isArray(s.scores)
-          ? s.scores.filter(x => x && typeof x.score === "number").map(x => ({ score: x.score, date: Number(x.date) || now }))
-          : [],
-        sungDates,
-        createdAt: Number(s.createdAt) || now + i,
+        title: s.title,
+        artist: s.artist,
+        artworkUrl: s.artworkUrl,
+        tags: s.tags,
+        key: s.key,
+        rating: s.rating,
+        practicing: s.practicing,
+        memo: s.memo,
+        scores: s.scores,
+        sungDates: s.sungDates,
+        createdAt: s.createdAt || now + i,
         updatedAt: now,
       };
       syncSungFields(song);
       added.push(song);
+      existingByKey.set(k, song.id);
+      if (s.sourceId) sourceIdMap.set(s.sourceId, song.id);
     });
+    const addedHistoryCount = added.reduce((total, song) =>
+      total + (song.scores || []).length + (song.sungDates || []).length, 0);
+    if (historyEntryCount() + addedHistoryCount > LIMITS.totalHistoryEntries) {
+      throw new Error("取り込み後の履歴件数が上限を超えます");
+    }
     if (added.length) {
       await DB.bulkPut(added);
       songs.push(...added);
     }
-    return added.length;
+    return { addedCount: added.length, duplicateCount, sourceIdMap, addedIds: added.map(song => song.id) };
   }
 
   // ---------- 設定 ----------
@@ -1079,7 +1465,23 @@
     const sungTotal = songs.reduce((n, s) => n + sungCountOf(s), 0);
     $("statsText").textContent = `登録曲数: ${songs.length}曲 ／ タグ: ${tagCount}個 ／ 累計歌唱: ${sungTotal}回`;
     renderTagManager();
+    updateBackupStatus();
+    updateStorageStatus();
+    updateDiagnosticOutput();
     $("settingsModal").classList.remove("hidden");
+  }
+
+  function updateDiagnosticOutput() {
+    const output = $("diagnosticOutput");
+    if (!output) return;
+    try {
+      const rows = JSON.parse(localStorage.getItem(DIAG_KEY) || "[]");
+      output.textContent = rows.length
+        ? rows.map(row => `${new Date(row.at).toLocaleString("ja-JP")} ${row.type} ${row.detail}`).join("\n")
+        : "診断情報はまだありません";
+    } catch (_) {
+      output.textContent = "診断情報を読み込めませんでした";
+    }
   }
 
   function renderTagManager() {
@@ -1096,45 +1498,218 @@
       btn.textContent = `${tag} ✕`;
       btn.onclick = async () => {
         if (!confirm(`タグ「${tag}」をすべての曲から削除しますか？`)) return;
-        const changed = songs.filter(s => (s.tags || []).includes(tag));
-        changed.forEach(s => { s.tags = s.tags.filter(t => t !== tag); s.updatedAt = Date.now(); });
-        await DB.bulkPut(changed);
-        activeTags.delete(tag);
-        renderTagManager();
-        render();
-        toast(`タグ「${tag}」を削除しました`);
+        const changed = songs.filter(s => (s.tags || []).includes(tag)).map(s => ({
+          ...s,
+          tags: s.tags.filter(t => t !== tag),
+          updatedAt: Date.now(),
+        }));
+        try {
+          await DB.bulkPut(changed);
+          const byId = new Map(changed.map(s => [s.id, s]));
+          songs = songs.map(s => byId.get(s.id) || s);
+          activeTags.delete(tag);
+          renderTagManager();
+          render();
+          toast(`タグ「${tag}」を削除しました`);
+        } catch (e) {
+          reportError("タグの削除", e);
+        }
       };
       box.appendChild(btn);
     });
   }
 
-  function exportJson() {
-    const data = {
-      app: "karaoke-repertoire",
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      songs,
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  function importSetlists(validatedSetlists, sourceIdMap) {
+    const imported = validatedSetlists.map(raw => {
+      const seen = new Set();
+      const items = [];
+      raw.items.forEach(item => {
+        const mappedId = sourceIdMap.get(item.sourceId);
+        if (!mappedId || seen.has(mappedId)) return;
+        seen.add(mappedId);
+        const next = { id: mappedId, done: item.done };
+        if (Number.isFinite(item.sungAt)) next.sungAt = item.sungAt;
+        items.push(next);
+      });
+      return { id: DB.newId(), name: raw.name, createdAt: raw.createdAt, items };
+    });
+    if (!imported.length) return 0;
+    const currentItemCount = setlists.reduce((sum, list) => sum + list.items.length, 0);
+    const importedItemCount = imported.reduce((sum, list) => sum + list.items.length, 0);
+    if (setlists.length + imported.length > LIMITS.setlists ||
+        currentItemCount + importedItemCount > LIMITS.totalSetlistItems) {
+      throw new Error("取り込み後のセットリスト数または合計曲数が上限を超えます");
+    }
+    setlists.push(...imported);
+    if (!saveSetlists()) {
+      setlists.splice(setlists.length - imported.length, imported.length);
+      throw new Error("セットリストを端末へ保存できませんでした");
+    }
+    return imported.length;
+  }
+
+  function updateBackupStatus() {
+    const el = $("backupStatus");
+    if (!el) return;
+    try {
+      const timestamp = Number(localStorage.getItem(STORAGE_KEYS.lastBackup));
+      el.textContent = timestamp
+        ? `最終バックアップ: ${fmtDate(timestamp)}`
+        : "まだバックアップされていません";
+    } catch (_) {
+      el.textContent = "バックアップ日時を確認できません";
+    }
+  }
+
+  async function updateStorageStatus() {
+    const status = $("storageStatus");
+    const button = $("btnPersistStorage");
+    if (!navigator.storage) {
+      status.textContent = "このブラウザでは保存状態を確認できません";
+      button.classList.add("hidden");
+      return;
+    }
+    try {
+      const [persistent, estimate] = await Promise.all([
+        navigator.storage.persisted ? navigator.storage.persisted() : Promise.resolve(false),
+        navigator.storage.estimate ? navigator.storage.estimate() : Promise.resolve(null),
+      ]);
+      const usage = estimate && Number.isFinite(estimate.usage)
+        ? `・使用量 ${Math.max(0.1, estimate.usage / 1024 / 1024).toFixed(1)}MB`
+        : "";
+      const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+      const installHint = standalone ? "" : "・iPhoneではホーム画面からの利用を推奨します";
+      status.textContent = persistent
+        ? `保護された端末保存です${usage}${installHint}`
+        : `通常の端末保存です${usage}${installHint}`;
+      button.classList.toggle("hidden", persistent || !navigator.storage.persist);
+    } catch (e) {
+      status.textContent = "保存状態を確認できませんでした";
+      button.classList.toggle("hidden", !navigator.storage.persist);
+    }
+  }
+
+  async function requestPersistentStorage() {
+    const button = $("btnPersistStorage");
+    button.disabled = true;
+    try {
+      const persistent = await navigator.storage.persist();
+      toast(persistent ? "端末保存が保護されました" : "保護は許可されませんでした。バックアップをご利用ください");
+      await updateStorageStatus();
+    } catch (e) {
+      reportError("端末保存の保護", e);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function createBackupBlob(data) {
+    if (typeof Worker === "undefined") {
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      if (blob.size > LIMITS.exportBytes) throw new Error("バックアップがサイズ上限を超えています");
+      return Promise.resolve(blob);
+    }
+    return new Promise((resolve, reject) => {
+      const worker = new Worker("js/backup-worker.js");
+      worker.onmessage = event => {
+        worker.terminate();
+        if (event.data && event.data.error) reject(new Error(event.data.error));
+        else resolve(event.data.blob);
+      };
+      worker.onerror = () => {
+        worker.terminate();
+        reject(new Error("バックアップ処理を開始できませんでした"));
+      };
+      worker.postMessage({ data, maxBytes: LIMITS.exportBytes });
+    });
+  }
+
+  async function exportJson() {
+    const button = $("btnExport");
+    button.disabled = true;
+    const originalLabel = button.textContent;
+    button.textContent = "作成中…";
+    let blob;
+    try {
+      const data = {
+        app: "karaoke-repertoire",
+        version: BACKUP_VERSION,
+        exportedAt: new Date().toISOString(),
+        songs,
+        setlists,
+      };
+      blob = await createBackupBlob(data);
+    } catch (error) {
+      reportError("バックアップの作成", error);
+      return;
+    } finally {
+      button.disabled = false;
+      button.textContent = originalLabel;
+    }
+    const filename = `karaoke-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    const file = typeof File !== "undefined" ? new File([blob], filename, { type: blob.type }) : null;
+    if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ title: "うたログ バックアップ", files: [file] });
+        localStorage.setItem(STORAGE_KEYS.lastBackup, String(Date.now()));
+        updateBackupStatus();
+        toast("バックアップファイルを共有しました");
+        return;
+      } catch (error) {
+        if (error && error.name === "AbortError") return;
+        diagnostic("backup-share-failed", error && error.name);
+      }
+    }
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `karaoke-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = filename;
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(a.href);
-    toast("エクスポートしました");
+    a.remove();
+    const objectUrl = a.href;
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    toast("バックアップのダウンロードを開始しました。保存完了を確認してください");
   }
 
   async function importJson(file) {
     try {
+      if (file.size > LIMITS.importBytes) {
+        throw new Error(`ファイルサイズが上限（${LIMITS.importBytes / 1024 / 1024}MB）を超えています`);
+      }
       const data = JSON.parse(await file.text());
       const incoming = Array.isArray(data) ? data : data.songs;
       if (!Array.isArray(incoming)) throw new Error("形式が違います");
-      const addedCount = await mergeSongs(incoming);
+      if (!Array.isArray(data)) {
+        if (data.app && data.app !== "karaoke-repertoire") throw new Error("別のアプリのバックアップです");
+        if (Number(data.version) > BACKUP_VERSION) throw new Error("このバックアップは新しいバージョンで作成されています");
+      }
+      // setlists も先に検証し、曲だけ入った後に形式エラーとなるのを防ぐ。
+      const validatedSetlists = Array.isArray(data) ? [] : validateBackupSetlists(data.setlists);
+      if (validatedSetlists.length) {
+        const sourceIds = new Set(validateIncomingSongs(incoming).map(song => song.sourceId).filter(Boolean));
+        validatedSetlists.forEach(list => list.items.forEach(item => {
+          if (!sourceIds.has(item.sourceId)) {
+            throw new Error(`セットリスト「${list.name}」が存在しない曲を参照しています`);
+          }
+        }));
+      }
+      const result = await mergeSongs(incoming);
+      let importedSetlists = 0;
+      try {
+        importedSetlists = importSetlists(validatedSetlists, result.sourceIdMap);
+      } catch (setlistError) {
+        if (result.addedIds.length) await DB.bulkRemove(result.addedIds);
+        const addedIdSet = new Set(result.addedIds);
+        songs = songs.filter(song => !addedIdSet.has(song.id));
+        throw new Error(`セットリストを保存できなかったため取り込みを取り消しました: ${setlistError.message}`);
+      }
       render();
       openSettings();
-      toast(`${addedCount}曲をインポートしました（重複${incoming.length - addedCount}件スキップ）`);
+      const setlistText = importedSetlists ? `・セットリスト${importedSetlists}件` : "";
+      toast(`${result.addedCount}曲${setlistText}をインポートしました（重複${result.duplicateCount}件）`);
     } catch (e) {
       toast("インポート失敗: " + e.message);
+      console.error("[うたログ] インポート失敗", e);
     }
   }
 
@@ -1187,19 +1762,59 @@
   enableSheetDrag($("receiveModal"), () => $("receiveModal").classList.add("hidden"));
   enableSheetDrag($("rouletteModal"), () => { clearInterval(rouletteTimer); $("rouletteModal").classList.add("hidden"); });
 
+  // モーダルが開いたときのフォーカス移動・閉じ込め・復帰を共通化する。
+  const modalPreviousFocus = new WeakMap();
+  const focusableSelector = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
+  function updateModalIsolation() {
+    const visible = [...document.querySelectorAll(".modal-overlay:not(.hidden)")].at(-1) || null;
+    [...document.body.children].forEach(child => {
+      if (child.tagName === "SCRIPT" || child.id === "toast") return;
+      child.inert = !!visible && child !== visible;
+    });
+  }
+  document.querySelectorAll(".modal-overlay").forEach(overlay => {
+    new MutationObserver(() => {
+      if (!overlay.classList.contains("hidden")) {
+        modalPreviousFocus.set(overlay, document.activeElement);
+        requestAnimationFrame(() => overlay.querySelector(focusableSelector)?.focus());
+      } else {
+        const previous = modalPreviousFocus.get(overlay);
+        if (previous && previous.isConnected) previous.focus();
+      }
+      updateModalIsolation();
+    }).observe(overlay, { attributes: true, attributeFilter: ["class"] });
+    overlay.addEventListener("keydown", e => {
+      if (e.key === "Escape") {
+        const close = overlay.querySelector("[id*='Close'], #btnCancelEdit");
+        if (close) { e.preventDefault(); close.click(); }
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const items = [...overlay.querySelectorAll(focusableSelector)].filter(el => el.offsetParent !== null);
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    });
+  });
+
   // ---------- イベント登録 ----------
   $("searchInput").addEventListener("input", (e) => {
     searchQuery = e.target.value;
+    listDisplayLimit = LIST_PAGE_SIZE;
     $("btnClearSearch").classList.toggle("hidden", !searchQuery);
-    renderList();
+    clearTimeout(searchRenderTimer);
+    searchRenderTimer = setTimeout(renderList, 150);
   });
   $("btnClearSearch").onclick = () => {
     $("searchInput").value = "";
     searchQuery = "";
+    listDisplayLimit = LIST_PAGE_SIZE;
     $("btnClearSearch").classList.add("hidden");
     renderList();
   };
-  $("sortSelect").onchange = (e) => { sortMode = e.target.value; renderList(); };
+  $("sortSelect").onchange = (e) => { sortMode = e.target.value; listDisplayLimit = LIST_PAGE_SIZE; renderList(); };
 
   $("tabList").onclick = () => switchTab("list");
   $("tabSetlist").onclick = () => {
@@ -1213,7 +1828,7 @@
   $("btnNewSetlist").onclick = () => {
     const name = prompt("セットリストの名前", defaultListName());
     if (name === null) return;
-    createSetlist(name.trim() || undefined);
+    if (!createSetlist(name.trim() || undefined)) return;
     renderPlList();
     toast("セットリストを作成しました");
   };
@@ -1225,8 +1840,13 @@
     if (!list) return;
     const name = prompt("セットリストの名前", list.name);
     if (name === null || !name.trim()) return;
+    if (name.trim().length > LIMITS.setlistName) {
+      toast(`セットリスト名は${LIMITS.setlistName}文字以内にしてください`);
+      return;
+    }
+    const previousName = list.name;
     list.name = name.trim();
-    saveSetlists();
+    if (!saveSetlists()) { list.name = previousName; return; }
     renderSetlistDetail();
   };
 
@@ -1234,8 +1854,12 @@
     const list = currentSetlist();
     if (!list) return;
     if (!confirm(`セットリスト「${list.name}」を削除しますか？（曲や歌唱記録は消えません）`)) return;
+    const index = setlists.indexOf(list);
     setlists = setlists.filter(l => l.id !== list.id);
-    saveSetlists();
+    if (!saveSetlists()) {
+      setlists.splice(Math.max(0, index), 0, list);
+      return;
+    }
     closeSetlistDetail();
     renderList();
     toast("セットリストを削除しました");
@@ -1244,16 +1868,18 @@
   $("btnClearDone").onclick = () => {
     const list = currentSetlist();
     if (!list) return;
+    const previousItems = list.items;
     list.items = list.items.filter(x => !x.done);
-    saveSetlists();
+    if (!saveSetlists()) { list.items = previousItems; return; }
     renderSetlistDetail();
   };
   $("btnClearSetlist").onclick = () => {
     const list = currentSetlist();
     if (!list) return;
     if (list.items.length && !confirm("このリストから全曲外しますか？（歌唱記録は残ります）")) return;
+    const previousItems = list.items;
     list.items = [];
-    saveSetlists();
+    if (!saveSetlists()) { list.items = previousItems; return; }
     renderSetlistDetail();
   };
 
@@ -1264,16 +1890,18 @@
   $("btnPickerNew").onclick = () => {
     const name = prompt("セットリストの名前", defaultListName());
     if (name === null) return;
+    if (!canAddSetlistItems(1)) return;
     const list = createSetlist(name.trim() || undefined);
+    if (!list) return;
     list.items.push({ id: pickerSongId, done: false });
-    saveSetlists();
+    if (!saveSetlists()) { list.items.pop(); return; }
     renderPicker();
     renderList();
     toast(`「${list.name}」を作成して追加しました`);
   };
 
   $("btnAdd").onclick = () => openEdit(null);
-  $("btnCancelEdit").onclick = closeEdit;
+  $("btnCancelEdit").onclick = () => closeEdit(); // 直接渡すとclickイベントがforce扱いになり確認が飛ばされる
   $("btnSaveEdit").onclick = saveEdit;
   $("btnDelete").onclick = deleteSong;
   $("editModal").addEventListener("click", (e) => { if (e.target === $("editModal")) closeEdit(); });
@@ -1307,7 +1935,8 @@
   };
   $("btnSungUndo").onclick = () => {
     if (!editSungDates.length) return;
-    editSungDates.pop();
+    const latest = Math.max(...editSungDates);
+    editSungDates.splice(editSungDates.lastIndexOf(latest), 1);
     updateSungView();
     toast("1回分取り消しました（保存で確定）");
   };
@@ -1340,14 +1969,18 @@
     clearTimeout(suggestTimer);
     const term = e.target.value.trim();
     if (term.length < 1) { hideSuggest(); return; }
-    suggestTimer = setTimeout(() => showSuggest(term), 350);
+    suggestTimer = setTimeout(() => showSuggest(term).catch(error => {
+      if (!error || error.name !== "AbortError") diagnostic("suggest-failed", error && error.name);
+    }), 350);
   });
 
   $("inputArtist").addEventListener("input", (e) => {
     clearTimeout(artistSuggestTimer);
     const term = e.target.value.trim();
     if (term.length < 1) { hideSuggest(); return; }
-    artistSuggestTimer = setTimeout(() => showArtistSuggest(term), 350);
+    artistSuggestTimer = setTimeout(() => showArtistSuggest(term).catch(error => {
+      if (!error || error.name !== "AbortError") diagnostic("artist-suggest-failed", error && error.name);
+    }), 350);
   });
 
   // 候補リストの外側をタップしたら閉じる（候補が邪魔で他の欄に入力できない対策）
@@ -1370,6 +2003,20 @@
   });
   $("btnExport").onclick = exportJson;
   $("btnImport").onclick = () => $("importFile").click();
+  $("btnPersistStorage").onclick = requestPersistentStorage;
+  $("btnCopyDiagnostics").onclick = async () => {
+    try {
+      await navigator.clipboard.writeText($("diagnosticOutput").textContent);
+      toast("診断情報をコピーしました");
+    } catch (error) {
+      reportError("診断情報のコピー", error);
+    }
+  };
+  $("btnClearDiagnostics").onclick = () => {
+    try { localStorage.removeItem(DIAG_KEY); } catch (_) { /* 表示だけ更新 */ }
+    updateDiagnosticOutput();
+    toast("診断情報を消去しました");
+  };
   $("importFile").addEventListener("change", (e) => {
     if (e.target.files[0]) importJson(e.target.files[0]);
     e.target.value = "";
@@ -1411,11 +2058,16 @@
   $("btnCloseReceive").onclick = () => $("receiveModal").classList.add("hidden");
   $("btnImportReceive").onclick = async () => {
     if (!receivedSongs) return;
-    const added = await mergeSongs(receivedSongs);
-    $("receiveModal").classList.add("hidden");
-    render();
-    toast(`${added}曲を取り込みました（重複${receivedSongs.length - added}件スキップ）`);
-    receivedSongs = null;
+    try {
+      const result = await mergeSongs(receivedSongs);
+      $("receiveModal").classList.add("hidden");
+      render();
+      toast(`${result.addedCount}曲を取り込みました（重複${result.duplicateCount}件スキップ）`);
+      receivedSongs = null;
+      history.replaceState(null, "", location.pathname + location.search);
+    } catch (e) {
+      reportError("共有曲の取り込み", e);
+    }
   };
 
   // ---------- 起動 ----------
@@ -1426,26 +2078,68 @@
     const migrated = [];
     songs.forEach(s => {
       if (!Array.isArray(s.sungDates)) {
-        const n = Number(s.sungCount) || 0;
-        s.sungDates = n > 0 ? Array(n).fill(s.lastSungAt || s.updatedAt || Date.now()) : [];
+        const rawCount = Number(s.sungCount) || 0;
+        const n = Number.isInteger(rawCount) && rawCount > 0
+          ? Math.min(rawCount, LIMITS.sungDates)
+          : 0;
+        const legacyDate = [s.lastSungAt, s.updatedAt].find(date =>
+          typeof date === "number" && Number.isFinite(date) && date > 0) || Date.now();
+        s.sungDates = n > 0 ? Array(n).fill(legacyDate) : [];
         migrated.push(s);
+      } else {
+        const normalizedDates = s.sungDates
+          .filter(date => typeof date === "number" && Number.isFinite(date) && date > 0)
+          .slice(0, LIMITS.sungDates)
+          .sort((a, b) => a - b);
+        if (normalizedDates.length !== s.sungDates.length || normalizedDates.some((date, i) => date !== s.sungDates[i])) {
+          s.sungDates = normalizedDates;
+          syncSungFields(s);
+          migrated.push(s);
+        }
       }
     });
     if (migrated.length) await DB.bulkPut(migrated);
     render();
     const m = location.hash.match(/^#share=(.+)$/);
     if (m) {
-      history.replaceState(null, "", location.pathname + location.search);
       try {
         const shared = await decodeShare(decodeURIComponent(m[1]));
         if (shared.length) showReceive(shared);
       } catch (e) {
-        toast("共有リンクの読み込みに失敗しました");
+        toast("共有リンクの読み込みに失敗しました: " + e.message);
+        console.error("[うたログ] 共有リンクの読み込み失敗", e);
       }
     }
+  }).catch(e => {
+    reportError("曲データの読み込み", e);
+    $("emptyState").classList.remove("hidden");
+    $("emptyMessage").textContent = "曲データを読み込めませんでした。ページを再読み込みしてください。";
   });
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
+    let refreshing = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (refreshing) return;
+      refreshing = true;
+      location.reload();
+    });
+    navigator.serviceWorker.register("sw.js").then(registration => {
+      const offerUpdate = worker => {
+        if (!worker) return;
+        toast("うたログの更新があります", "更新する", () => {
+          worker.postMessage({ type: "SKIP_WAITING" });
+        });
+      };
+      if (registration.waiting) offerUpdate(registration.waiting);
+      registration.addEventListener("updatefound", () => {
+        const worker = registration.installing;
+        worker.addEventListener("statechange", () => {
+          if (worker.state === "installed" && navigator.serviceWorker.controller) offerUpdate(worker);
+        });
+      });
+    }).catch(e => {
+      diagnostic("service-worker-failed", e && e.name);
+      console.warn("[うたログ] Service Worker登録失敗", e);
+    });
   }
 })();
