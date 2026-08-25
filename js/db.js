@@ -82,10 +82,14 @@ const DB = (() => {
     return tx("readwrite", store => { store.delete(id); });
   }
 
+  function bulkRemove(ids) {
+    return tx("readwrite", store => { ids.forEach(id => store.delete(id)); return ids.length; });
+  }
+
   function newId() {
     return (crypto.randomUUID && crypto.randomUUID()) ||
       Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
   }
 
-  return { getAll, put, bulkPut, remove, newId };
+  return { getAll, put, bulkPut, remove, bulkRemove, newId };
 })();

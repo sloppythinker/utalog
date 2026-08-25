@@ -2,6 +2,9 @@
   const $ = (id) => document.getElementById(id);
   const { LIMITS, validateIncomingSongs, validateBackupSetlists, readStreamLimited } = UtaLogData;
   const BACKUP_VERSION = 2;
+  const LIST_PAGE_SIZE = 100;
+  const HISTORY_DISPLAY_LIMIT = 300;
+  const DIAG_KEY = "utalog-diagnostics";
   const STORAGE_KEYS = {
     setlists: "utalog-setlists",
     oldSetlist: "utalog-setlist",
@@ -18,6 +21,10 @@
   let currentSetlistId = null;
   let pickerSongId = null;
   let receivedSongs = null;
+  let listDisplayLimit = LIST_PAGE_SIZE;
+  let searchRenderTimer = null;
+  let titleSuggestController = null;
+  let artistSuggestController = null;
 
   // 編集モーダルの状態
   let editingId = null;   // null = 新規
@@ -33,6 +40,14 @@
   let suggestTimer = null;
   let artistSuggestTimer = null;
 
+  function diagnostic(type, detail = "") {
+    try {
+      const current = JSON.parse(localStorage.getItem(DIAG_KEY) || "[]");
+      current.push({ at: Date.now(), type, detail: String(detail).slice(0, 160) });
+      localStorage.setItem(DIAG_KEY, JSON.stringify(current.slice(-50)));
+    } catch (_) { /* 診断ログで本処理を止めない */ }
+  }
+
   // ---------- ユーティリティ ----------
   function keyLabel(k) {
     if (!k) return "原曲";
@@ -42,6 +57,11 @@
   function norm(s) {
     return (s || "").toLowerCase().replace(/[ぁ-ゖ]/g,
       ch => String.fromCharCode(ch.charCodeAt(0) + 0x60)); // ひらがな→カタカナ
+  }
+
+  // 検索・重複判定・サジェスト共通の正規化（NFKC→小文字→かな統一→空白除去）
+  function normSearch(s) {
+    return norm((s || "").normalize("NFKC")).replace(/[\s　]/g, "");
   }
 
   function bestScore(song) {
@@ -107,6 +127,7 @@
 
   function reportError(action, error) {
     console.error(`[うたログ] ${action}`, error);
+    diagnostic("error", `${action}:${error && error.name ? error.name : "Error"}`);
     const detail = error && error.name === "QuotaExceededError"
       ? "端末の空き容量を確認してください"
       : error && error.message ? error.message : "もう一度お試しください";
@@ -120,6 +141,12 @@
     return d.length ? Math.max(...d) : 0;
   }
 
+  function historyEntryCount(excludeId = null) {
+    return songs.reduce((total, song) => song.id === excludeId
+      ? total
+      : total + (song.scores || []).length + (song.sungDates || []).length, 0);
+  }
+
   function syncSungFields(song) {
     song.sungCount = sungCountOf(song);
     song.lastSungAt = lastSungOf(song);
@@ -128,6 +155,9 @@
   async function recordSung(song, timestamp = Date.now()) {
     if ((song.sungDates || []).length >= LIMITS.sungDates) {
       throw new Error("歌唱履歴が上限に達しています。バックアップ後に古い履歴を整理してください");
+    }
+    if (historyEntryCount() >= LIMITS.totalHistoryEntries) {
+      throw new Error("履歴の合計件数が上限に達しています。バックアップ後に古い履歴を整理してください");
     }
     const next = { ...song, sungDates: [...(song.sungDates || []), timestamp], updatedAt: Date.now() };
     syncSungFields(next);
@@ -160,6 +190,7 @@
   function normalizeStoredSetlists(value) {
     if (!Array.isArray(value)) throw new Error("セットリストの形式が不正です");
     if (value.length > LIMITS.setlists) throw new Error("セットリスト数が上限を超えています");
+    let totalItems = 0;
     return value.map((list, listIndex) => {
       if (!list || typeof list !== "object" || Array.isArray(list)) {
         throw new Error(`セットリスト${listIndex + 1}の形式が不正です`);
@@ -171,6 +202,8 @@
       if (!Array.isArray(list.items) || list.items.length > LIMITS.setlistItems) {
         throw new Error(`「${name}」の曲数が上限を超えています`);
       }
+      totalItems += list.items.length;
+      if (totalItems > LIMITS.totalSetlistItems) throw new Error("セットリストの合計曲数が上限を超えています");
       const items = list.items.map((item, itemIndex) => {
         if (!item || typeof item !== "object" || typeof item.id !== "string" || !item.id) {
           throw new Error(`「${name}」の${itemIndex + 1}曲目が不正です`);
@@ -228,6 +261,13 @@
       reportError("セットリストの保存", e);
       return false;
     }
+  }
+
+  function canAddSetlistItems(count) {
+    const total = setlists.reduce((sum, list) => sum + list.items.length, 0);
+    if (total + count <= LIMITS.totalSetlistItems) return true;
+    toast(`セットリスト全体で登録できるのは${LIMITS.totalSetlistItems}曲までです`);
+    return false;
   }
 
   function createSetlist(name) {
@@ -436,6 +476,7 @@
             toast(`1つのセットリストは${LIMITS.setlistItems}曲までです`);
             return;
           }
+          if (!canAddSetlistItems(1)) return;
           list.items.push({ id: pickerSongId, done: false });
           if (!saveSetlists()) { list.items.pop(); return; }
           toast(`「${list.name}」に追加しました`);
@@ -464,16 +505,21 @@
 
   // ---------- 歌った履歴 ----------
   function renderHistory() {
+    const startedAt = performance.now();
     const box = $("historyList");
     box.innerHTML = "";
     const byDay = new Map(); // 日付0時のts → Map(songId → 回数)
-    songs.forEach(s => (s.sungDates || []).forEach(ts => {
+    const events = [];
+    songs.forEach(s => (s.sungDates || []).forEach(ts => events.push({ ts, id: s.id })));
+    events.sort((a, b) => b.ts - a.ts);
+    const visibleEvents = events.slice(0, HISTORY_DISPLAY_LIMIT);
+    visibleEvents.forEach(({ ts, id }) => {
       const d = new Date(ts);
       const key = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
       if (!byDay.has(key)) byDay.set(key, new Map());
       const m = byDay.get(key);
-      m.set(s.id, (m.get(s.id) || 0) + 1);
-    }));
+      m.set(id, (m.get(id) || 0) + 1);
+    });
     const days = [...byDay.keys()].sort((a, b) => b - a);
     const songsById = new Map(songs.map(song => [song.id, song]));
     $("historyEmpty").classList.toggle("hidden", days.length > 0);
@@ -490,9 +536,11 @@
         const defName = `${fmtDate(day)}の再演リスト`;
         const name = prompt("セットリスト名", defName);
         if (name === null) return;
+        const replayItems = [...m.keys()].filter(id => songsById.has(id)).map(id => ({ id, done: false }));
+        if (!canAddSetlistItems(replayItems.length)) return;
         const list = createSetlist(name.trim() || defName);
         if (!list) return;
-        list.items = [...m.keys()].filter(id => songsById.has(id)).map(id => ({ id, done: false }));
+        list.items = replayItems;
         if (!saveSetlists()) { list.items = []; return; }
         toast(`「${list.name}」を作成しました（${list.items.length}曲）`);
       };
@@ -516,13 +564,21 @@
         box.appendChild(row);
       });
     });
+    if (events.length > visibleEvents.length) {
+      const note = document.createElement("p");
+      note.className = "hint history-limit-note";
+      note.textContent = `表示を直近${HISTORY_DISPLAY_LIMIT}件に限定しています（全${events.length}件）`;
+      box.appendChild(note);
+    }
+    const elapsed = Math.round(performance.now() - startedAt);
+    if (elapsed >= 32) diagnostic("render-history", `${elapsed}ms/${visibleEvents.length}`);
   }
 
   // ---------- リスト描画 ----------
   function filteredSongs() {
-    const q = norm(searchQuery);
+    const q = normSearch(searchQuery);
     let list = songs.filter(s => {
-      if (q && !norm(s.title).includes(q) && !norm(s.artist).includes(q)) return false;
+      if (q && !normSearch(s.title).includes(q) && !normSearch(s.artist).includes(q)) return false;
       if (filterPracticing && !s.practicing) return false;
       for (const t of activeTags) if (!(s.tags || []).includes(t)) return false;
       return true;
@@ -601,7 +657,9 @@
   }
 
   function renderList() {
-    const list = filteredSongs();
+    const startedAt = performance.now();
+    const allMatches = filteredSongs();
+    const list = allMatches.slice(0, listDisplayLimit);
     const setlistSongIds = new Set(setlists.flatMap(setlist => setlist.items.map(item => item.id)));
     const box = $("songList");
     box.innerHTML = "";
@@ -616,6 +674,7 @@
     }
     empty.classList.add("hidden");
 
+    const fragment = document.createDocumentFragment();
     list.forEach(song => {
       const card = document.createElement("div");
       card.className = "song-card";
@@ -671,8 +730,19 @@
           sung.disabled = false;
         }
       };
-      box.appendChild(card);
+      fragment.appendChild(card);
     });
+    box.appendChild(fragment);
+    if (allMatches.length > list.length) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "settings-btn list-more";
+      more.textContent = `さらに表示（残り${allMatches.length - list.length}曲）`;
+      more.onclick = () => { listDisplayLimit += LIST_PAGE_SIZE; renderList(); };
+      box.appendChild(more);
+    }
+    const elapsed = Math.round(performance.now() - startedAt);
+    if (elapsed >= 32) diagnostic("render-list", `${elapsed}ms/${list.length}`);
   }
 
   function render() {
@@ -746,14 +816,8 @@
     const originalLabel = saveButton.textContent;
     saveButton.textContent = "保存中…";
     try {
-      // 画像取得に失敗しても曲の保存は継続する。
       const artistName = $("inputArtist").value.trim();
-      if (!editArtworkUrl && artistName) {
-        editArtworkUrl = await Promise.race([
-          ITunes.artistImage(artistName),
-          new Promise(r => setTimeout(() => r(""), 5000)),
-        ]).catch(() => "") || "";
-      }
+      const shouldFetchArtwork = !editArtworkUrl && !!artistName;
       const now = Date.now();
       const base = editingId ? songs.find(s => s.id === editingId) : null;
       const song = {
@@ -774,6 +838,10 @@
         updatedAt: now,
       };
       validateIncomingSongs([song]);
+      const nextHistoryCount = (song.scores || []).length + (song.sungDates || []).length;
+      if (historyEntryCount(song.id) + nextHistoryCount > LIMITS.totalHistoryEntries) {
+        throw new Error("履歴の合計件数が上限を超えています");
+      }
       await DB.put(song);
       if (base) Object.assign(base, song); else songs.push(song);
       const wasEditing = !!editingId;
@@ -781,6 +849,18 @@
       render();
       toast(wasEditing ? "更新しました" : `「${title}」を追加しました`);
       editingId = null;
+      // 画像は保存操作を待たせず、取得できた場合だけ後から追記する。
+      if (shouldFetchArtwork) {
+        ITunes.artistImage(artistName).then(async artworkUrl => {
+          if (!artworkUrl) return;
+          const current = songs.find(item => item.id === song.id);
+          if (!current || current.artworkUrl || current.artist !== artistName) return;
+          const updated = { ...current, artworkUrl, updatedAt: Date.now() };
+          await DB.put(updated);
+          Object.assign(current, updated);
+          renderList();
+        }).catch(error => diagnostic("artwork-failed", error && error.name));
+      }
     } catch (e) {
       reportError("曲の保存", e);
     } finally {
@@ -794,11 +874,18 @@
     const song = songs.find(s => s.id === editingId);
     if (!song) return;
     if (!confirm(`「${song.title}」を削除しますか？`)) return;
+    const previousSetlists = structuredClone(setlists);
     try {
       await DB.remove(song.id);
       songs = songs.filter(s => s.id !== song.id);
       setlists.forEach(l => { l.items = l.items.filter(x => x.id !== song.id); });
-      saveSetlists();
+      if (!saveSetlists()) {
+        await DB.put(song);
+        songs.push(song);
+        setlists = previousSetlists;
+        render();
+        throw new Error("セットリストを更新できなかったため削除を取り消しました");
+      }
       closeEdit(true);
       render();
       toast("削除しました");
@@ -932,10 +1019,6 @@
   }
 
   // ---------- 曲名・歌手名サジェスト ----------
-  function normSuggest(s) {
-    return norm((s || "").normalize("NFKC")).replace(/[\s　]/g, "");
-  }
-
   function hideSuggest() {
     ["suggestBox", "suggestBoxArtist"].forEach(id => {
       $(id).classList.add("hidden");
@@ -976,31 +1059,39 @@
 
   async function showSuggest(term) {
     const box = $("suggestBox");
+    if (navigator.onLine === false) {
+      box.textContent = "オフラインのため候補検索を利用できません（手入力は可能です）";
+      box.classList.remove("hidden");
+      return;
+    }
+    if (titleSuggestController) titleSuggestController.abort();
+    titleSuggestController = new AbortController();
+    const options = { signal: titleSuggestController.signal };
     // 歌手名が入力済みなら「歌手名+曲名」でも検索し、その歌手の曲を優先
     const artistTerm = $("inputArtist").value.trim();
     let results;
     if (artistTerm) {
       const [byArtist, plain] = await Promise.all([
-        ITunes.search(artistTerm + " " + term),
-        ITunes.search(term),
+        ITunes.search(artistTerm + " " + term, 8, options),
+        ITunes.search(term, 8, options),
       ]);
       results = byArtist.concat(plain);
     } else {
-      results = await ITunes.search(term);
+      results = await ITunes.search(term, 8, options);
     }
     if ($("inputTitle").value.trim() !== term) return; // 入力が変わっていたら破棄
     // 曲名にマッチする候補だけ残す（歌手名だけの一致は除外）
-    const nt = normSuggest(term);
-    results = results.filter(r => normSuggest(r.title).includes(nt));
-    const na = normSuggest(artistTerm);
+    const nt = normSearch(term);
+    results = results.filter(r => normSearch(r.title).includes(nt));
+    const na = normSearch(artistTerm);
     if (na) {
       results.sort((a, b) =>
-        Number(normSuggest(b.artist).includes(na)) - Number(normSuggest(a.artist).includes(na)));
+        Number(normSearch(b.artist).includes(na)) - Number(normSearch(a.artist).includes(na)));
     }
     // 同じ曲名+歌手名の重複を除去
     const seen = new Set();
     results = results.filter(r => {
-      const k = normSuggest(r.title) + "\n" + normSuggest(r.artist);
+      const k = normSearch(r.title) + "\n" + normSearch(r.artist);
       return seen.has(k) ? false : (seen.add(k), true);
     }).slice(0, 8);
     if (results.length === 0) { $("suggestBox").classList.add("hidden"); return; }
@@ -1026,11 +1117,18 @@
 
   async function showArtistSuggest(term) {
     const box = $("suggestBoxArtist");
-    let results = await ITunes.searchArtists(term);
+    if (navigator.onLine === false) {
+      box.textContent = "オフラインのため候補検索を利用できません（手入力は可能です）";
+      box.classList.remove("hidden");
+      return;
+    }
+    if (artistSuggestController) artistSuggestController.abort();
+    artistSuggestController = new AbortController();
+    let results = await ITunes.searchArtists(term, 6, { signal: artistSuggestController.signal });
     if ($("inputArtist").value.trim() !== term) return;
     // 歌手名にマッチするものを優先（マッチゼロなら上位候補をそのまま表示）
-    const nt = normSuggest(term);
-    const matched = results.filter(a => normSuggest(a.name).includes(nt));
+    const nt = normSearch(term);
+    const matched = results.filter(a => normSearch(a.name).includes(nt));
     if (matched.length) results = matched;
     results = results.slice(0, 6);
     if (results.length === 0) { box.classList.add("hidden"); return; }
@@ -1176,7 +1274,10 @@
   // ---------- 共有 ----------
   function b64url(u8) {
     let s = "";
-    u8.forEach(b => s += String.fromCharCode(b));
+    const chunkSize = 0x8000;
+    for (let i = 0; i < u8.length; i += chunkSize) {
+      s += String.fromCharCode(...u8.subarray(i, i + chunkSize));
+    }
     return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   }
 
@@ -1251,7 +1352,7 @@
       $("btnNativeShare").classList.toggle("hidden", !navigator.share);
       const qrBox = $("qrBox");
       qrBox.innerHTML = "";
-      if (url.length <= 1800 && typeof qrcode !== "undefined") {
+      if (url.length <= 1000 && typeof qrcode !== "undefined") {
         try {
           const qr = qrcode(0, "L");
           qr.addData(url);
@@ -1274,35 +1375,52 @@
 
   function showReceive(list) {
     receivedSongs = list;
-    const mine = new Set(songs.map(s => normSuggest(s.title) + "|" + normSuggest(s.artist)));
-    const withFlag = list.map(s => ({ ...s, have: mine.has(normSuggest(s.title) + "|" + normSuggest(s.artist || "")) }));
+    const mine = new Set(songs.map(s => normSearch(s.title) + "|" + normSearch(s.artist)));
+    const withFlag = list.map(s => ({ ...s, have: mine.has(normSearch(s.title) + "|" + normSearch(s.artist || "")) }));
     const haveCount = withFlag.filter(s => s.have).length;
     $("receiveInfo").textContent =
       `${list.length}曲が共有されました（かぶり${haveCount}曲・新しい曲${list.length - haveCount}曲）`;
     const box = $("receiveList");
     box.innerHTML = "";
-    // 新しい曲を上に、かぶりは下にまとめる
-    [...withFlag].sort((a, b) => Number(a.have) - Number(b.have)).forEach(s => {
+    // 新しい曲を上に、かぶりは下にまとめ、端末を止めないよう段階表示する。
+    const ordered = [...withFlag].sort((a, b) => Number(a.have) - Number(b.have));
+    let shown = 0;
+    const appendNext = () => {
+      const fragment = document.createDocumentFragment();
+      ordered.slice(shown, shown + LIST_PAGE_SIZE).forEach(s => {
       const row = document.createElement("div");
       row.className = "receive-row" + (s.have ? " have" : "");
       row.innerHTML = `
         <span class="receive-flag ${s.have ? "flag-have" : "flag-new"}">${s.have ? "かぶり" : "NEW"}</span>
         <span class="receive-title">${esc(s.title)}</span><span class="receive-artist">${esc(s.artist)}</span>`;
-      box.appendChild(row);
-    });
+        fragment.appendChild(row);
+      });
+      shown = Math.min(shown + LIST_PAGE_SIZE, ordered.length);
+      box.querySelector(".receive-more")?.remove();
+      if (shown < ordered.length) {
+        const more = document.createElement("button");
+        more.type = "button";
+        more.className = "settings-btn receive-more";
+        more.textContent = `さらに表示（残り${ordered.length - shown}曲）`;
+        more.onclick = appendNext;
+        fragment.appendChild(more);
+      }
+      box.appendChild(fragment);
+    };
+    appendNext();
     $("receiveModal").classList.remove("hidden");
   }
 
   // ---------- インポート（共通マージ処理） ----------
   async function mergeSongs(incoming) {
     const validated = validateIncomingSongs(incoming);
-    const existingByKey = new Map(songs.map(s => [normSuggest(s.title) + "|" + normSuggest(s.artist), s.id]));
+    const existingByKey = new Map(songs.map(s => [normSearch(s.title) + "|" + normSearch(s.artist), s.id]));
     const now = Date.now();
     const added = [];
     const sourceIdMap = new Map();
     let duplicateCount = 0;
     validated.forEach((s, i) => {
-      const k = normSuggest(s.title) + "|" + normSuggest(s.artist);
+      const k = normSearch(s.title) + "|" + normSearch(s.artist);
       const existingId = existingByKey.get(k);
       if (existingId) {
         duplicateCount++;
@@ -1329,11 +1447,16 @@
       existingByKey.set(k, song.id);
       if (s.sourceId) sourceIdMap.set(s.sourceId, song.id);
     });
+    const addedHistoryCount = added.reduce((total, song) =>
+      total + (song.scores || []).length + (song.sungDates || []).length, 0);
+    if (historyEntryCount() + addedHistoryCount > LIMITS.totalHistoryEntries) {
+      throw new Error("取り込み後の履歴件数が上限を超えます");
+    }
     if (added.length) {
       await DB.bulkPut(added);
       songs.push(...added);
     }
-    return { addedCount: added.length, duplicateCount, sourceIdMap };
+    return { addedCount: added.length, duplicateCount, sourceIdMap, addedIds: added.map(song => song.id) };
   }
 
   // ---------- 設定 ----------
@@ -1344,7 +1467,21 @@
     renderTagManager();
     updateBackupStatus();
     updateStorageStatus();
+    updateDiagnosticOutput();
     $("settingsModal").classList.remove("hidden");
+  }
+
+  function updateDiagnosticOutput() {
+    const output = $("diagnosticOutput");
+    if (!output) return;
+    try {
+      const rows = JSON.parse(localStorage.getItem(DIAG_KEY) || "[]");
+      output.textContent = rows.length
+        ? rows.map(row => `${new Date(row.at).toLocaleString("ja-JP")} ${row.type} ${row.detail}`).join("\n")
+        : "診断情報はまだありません";
+    } catch (_) {
+      output.textContent = "診断情報を読み込めませんでした";
+    }
   }
 
   function renderTagManager() {
@@ -1397,6 +1534,12 @@
       return { id: DB.newId(), name: raw.name, createdAt: raw.createdAt, items };
     });
     if (!imported.length) return 0;
+    const currentItemCount = setlists.reduce((sum, list) => sum + list.items.length, 0);
+    const importedItemCount = imported.reduce((sum, list) => sum + list.items.length, 0);
+    if (setlists.length + imported.length > LIMITS.setlists ||
+        currentItemCount + importedItemCount > LIMITS.totalSetlistItems) {
+      throw new Error("取り込み後のセットリスト数または合計曲数が上限を超えます");
+    }
     setlists.push(...imported);
     if (!saveSetlists()) {
       setlists.splice(setlists.length - imported.length, imported.length);
@@ -1434,7 +1577,11 @@
       const usage = estimate && Number.isFinite(estimate.usage)
         ? `・使用量 ${Math.max(0.1, estimate.usage / 1024 / 1024).toFixed(1)}MB`
         : "";
-      status.textContent = persistent ? `保護された端末保存です${usage}` : `通常の端末保存です${usage}`;
+      const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+      const installHint = standalone ? "" : "・iPhoneではホーム画面からの利用を推奨します";
+      status.textContent = persistent
+        ? `保護された端末保存です${usage}${installHint}`
+        : `通常の端末保存です${usage}${installHint}`;
       button.classList.toggle("hidden", persistent || !navigator.storage.persist);
     } catch (e) {
       status.textContent = "保存状態を確認できませんでした";
@@ -1456,26 +1603,72 @@
     }
   }
 
-  function exportJson() {
-    const data = {
-      app: "karaoke-repertoire",
-      version: BACKUP_VERSION,
-      exportedAt: new Date().toISOString(),
-      songs,
-      setlists,
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  function createBackupBlob(data) {
+    if (typeof Worker === "undefined") {
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      if (blob.size > LIMITS.exportBytes) throw new Error("バックアップがサイズ上限を超えています");
+      return Promise.resolve(blob);
+    }
+    return new Promise((resolve, reject) => {
+      const worker = new Worker("js/backup-worker.js");
+      worker.onmessage = event => {
+        worker.terminate();
+        if (event.data && event.data.error) reject(new Error(event.data.error));
+        else resolve(event.data.blob);
+      };
+      worker.onerror = () => {
+        worker.terminate();
+        reject(new Error("バックアップ処理を開始できませんでした"));
+      };
+      worker.postMessage({ data, maxBytes: LIMITS.exportBytes });
+    });
+  }
+
+  async function exportJson() {
+    const button = $("btnExport");
+    button.disabled = true;
+    const originalLabel = button.textContent;
+    button.textContent = "作成中…";
+    let blob;
+    try {
+      const data = {
+        app: "karaoke-repertoire",
+        version: BACKUP_VERSION,
+        exportedAt: new Date().toISOString(),
+        songs,
+        setlists,
+      };
+      blob = await createBackupBlob(data);
+    } catch (error) {
+      reportError("バックアップの作成", error);
+      return;
+    } finally {
+      button.disabled = false;
+      button.textContent = originalLabel;
+    }
+    const filename = `karaoke-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    const file = typeof File !== "undefined" ? new File([blob], filename, { type: blob.type }) : null;
+    if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ title: "うたログ バックアップ", files: [file] });
+        localStorage.setItem(STORAGE_KEYS.lastBackup, String(Date.now()));
+        updateBackupStatus();
+        toast("バックアップファイルを共有しました");
+        return;
+      } catch (error) {
+        if (error && error.name === "AbortError") return;
+        diagnostic("backup-share-failed", error && error.name);
+      }
+    }
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `karaoke-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
     const objectUrl = a.href;
     setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-    try { localStorage.setItem(STORAGE_KEYS.lastBackup, String(Date.now())); } catch (_) { /* 日時保存は必須ではない */ }
-    updateBackupStatus();
-    toast("バックアップファイルを作成しました");
+    toast("バックアップのダウンロードを開始しました。保存完了を確認してください");
   }
 
   async function importJson(file) {
@@ -1505,11 +1698,10 @@
       try {
         importedSetlists = importSetlists(validatedSetlists, result.sourceIdMap);
       } catch (setlistError) {
-        render();
-        openSettings();
-        console.error("[うたログ] セットリストのインポート失敗", setlistError);
-        toast(`${result.addedCount}曲は追加しましたが、セットリストを保存できませんでした`);
-        return;
+        if (result.addedIds.length) await DB.bulkRemove(result.addedIds);
+        const addedIdSet = new Set(result.addedIds);
+        songs = songs.filter(song => !addedIdSet.has(song.id));
+        throw new Error(`セットリストを保存できなかったため取り込みを取り消しました: ${setlistError.message}`);
       }
       render();
       openSettings();
@@ -1570,19 +1762,59 @@
   enableSheetDrag($("receiveModal"), () => $("receiveModal").classList.add("hidden"));
   enableSheetDrag($("rouletteModal"), () => { clearInterval(rouletteTimer); $("rouletteModal").classList.add("hidden"); });
 
+  // モーダルが開いたときのフォーカス移動・閉じ込め・復帰を共通化する。
+  const modalPreviousFocus = new WeakMap();
+  const focusableSelector = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
+  function updateModalIsolation() {
+    const visible = [...document.querySelectorAll(".modal-overlay:not(.hidden)")].at(-1) || null;
+    [...document.body.children].forEach(child => {
+      if (child.tagName === "SCRIPT" || child.id === "toast") return;
+      child.inert = !!visible && child !== visible;
+    });
+  }
+  document.querySelectorAll(".modal-overlay").forEach(overlay => {
+    new MutationObserver(() => {
+      if (!overlay.classList.contains("hidden")) {
+        modalPreviousFocus.set(overlay, document.activeElement);
+        requestAnimationFrame(() => overlay.querySelector(focusableSelector)?.focus());
+      } else {
+        const previous = modalPreviousFocus.get(overlay);
+        if (previous && previous.isConnected) previous.focus();
+      }
+      updateModalIsolation();
+    }).observe(overlay, { attributes: true, attributeFilter: ["class"] });
+    overlay.addEventListener("keydown", e => {
+      if (e.key === "Escape") {
+        const close = overlay.querySelector("[id*='Close'], #btnCancelEdit");
+        if (close) { e.preventDefault(); close.click(); }
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const items = [...overlay.querySelectorAll(focusableSelector)].filter(el => el.offsetParent !== null);
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    });
+  });
+
   // ---------- イベント登録 ----------
   $("searchInput").addEventListener("input", (e) => {
     searchQuery = e.target.value;
+    listDisplayLimit = LIST_PAGE_SIZE;
     $("btnClearSearch").classList.toggle("hidden", !searchQuery);
-    renderList();
+    clearTimeout(searchRenderTimer);
+    searchRenderTimer = setTimeout(renderList, 150);
   });
   $("btnClearSearch").onclick = () => {
     $("searchInput").value = "";
     searchQuery = "";
+    listDisplayLimit = LIST_PAGE_SIZE;
     $("btnClearSearch").classList.add("hidden");
     renderList();
   };
-  $("sortSelect").onchange = (e) => { sortMode = e.target.value; renderList(); };
+  $("sortSelect").onchange = (e) => { sortMode = e.target.value; listDisplayLimit = LIST_PAGE_SIZE; renderList(); };
 
   $("tabList").onclick = () => switchTab("list");
   $("tabSetlist").onclick = () => {
@@ -1658,6 +1890,7 @@
   $("btnPickerNew").onclick = () => {
     const name = prompt("セットリストの名前", defaultListName());
     if (name === null) return;
+    if (!canAddSetlistItems(1)) return;
     const list = createSetlist(name.trim() || undefined);
     if (!list) return;
     list.items.push({ id: pickerSongId, done: false });
@@ -1736,14 +1969,18 @@
     clearTimeout(suggestTimer);
     const term = e.target.value.trim();
     if (term.length < 1) { hideSuggest(); return; }
-    suggestTimer = setTimeout(() => showSuggest(term), 350);
+    suggestTimer = setTimeout(() => showSuggest(term).catch(error => {
+      if (!error || error.name !== "AbortError") diagnostic("suggest-failed", error && error.name);
+    }), 350);
   });
 
   $("inputArtist").addEventListener("input", (e) => {
     clearTimeout(artistSuggestTimer);
     const term = e.target.value.trim();
     if (term.length < 1) { hideSuggest(); return; }
-    artistSuggestTimer = setTimeout(() => showArtistSuggest(term), 350);
+    artistSuggestTimer = setTimeout(() => showArtistSuggest(term).catch(error => {
+      if (!error || error.name !== "AbortError") diagnostic("artist-suggest-failed", error && error.name);
+    }), 350);
   });
 
   // 候補リストの外側をタップしたら閉じる（候補が邪魔で他の欄に入力できない対策）
@@ -1767,6 +2004,19 @@
   $("btnExport").onclick = exportJson;
   $("btnImport").onclick = () => $("importFile").click();
   $("btnPersistStorage").onclick = requestPersistentStorage;
+  $("btnCopyDiagnostics").onclick = async () => {
+    try {
+      await navigator.clipboard.writeText($("diagnosticOutput").textContent);
+      toast("診断情報をコピーしました");
+    } catch (error) {
+      reportError("診断情報のコピー", error);
+    }
+  };
+  $("btnClearDiagnostics").onclick = () => {
+    try { localStorage.removeItem(DIAG_KEY); } catch (_) { /* 表示だけ更新 */ }
+    updateDiagnosticOutput();
+    toast("診断情報を消去しました");
+  };
   $("importFile").addEventListener("change", (e) => {
     if (e.target.files[0]) importJson(e.target.files[0]);
     e.target.value = "";
@@ -1867,6 +2117,29 @@
   });
 
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("sw.js").catch(e => console.warn("[うたログ] Service Worker登録失敗", e));
+    let refreshing = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (refreshing) return;
+      refreshing = true;
+      location.reload();
+    });
+    navigator.serviceWorker.register("sw.js").then(registration => {
+      const offerUpdate = worker => {
+        if (!worker) return;
+        toast("うたログの更新があります", "更新する", () => {
+          worker.postMessage({ type: "SKIP_WAITING" });
+        });
+      };
+      if (registration.waiting) offerUpdate(registration.waiting);
+      registration.addEventListener("updatefound", () => {
+        const worker = registration.installing;
+        worker.addEventListener("statechange", () => {
+          if (worker.state === "installed" && navigator.serviceWorker.controller) offerUpdate(worker);
+        });
+      });
+    }).catch(e => {
+      diagnostic("service-worker-failed", e && e.name);
+      console.warn("[うたログ] Service Worker登録失敗", e);
+    });
   }
 })();

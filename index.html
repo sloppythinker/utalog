@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="うたログ">
@@ -282,6 +282,13 @@
         <div id="tagManager" class="tag-manager"></div>
         <p class="hint">タグをタップすると削除できます（曲からも外れます）。</p>
       </div>
+      <div class="settings-group">
+        <h3>診断情報</h3>
+        <p class="hint">曲名などは含めず、直近50件の処理時間とエラー種別だけを端末内に保存します。</p>
+        <pre id="diagnosticOutput" class="diagnostic-output">診断情報はまだありません</pre>
+        <button id="btnCopyDiagnostics" class="settings-btn">📋 診断情報をコピー</button>
+        <button id="btnClearDiagnostics" class="settings-btn">診断情報を消去</button>
+      </div>
     </div>
   </div>
 </div>
@@ -331,7 +338,7 @@
   </div>
 </div>
 
-<div id="toast" class="toast hidden"></div>
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
 <script src="js/vendor/qrcode.min.js"></script>
 <script src="js/db.js"></script>

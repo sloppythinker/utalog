@@ -17,6 +17,9 @@ const UtaLogData = (() => {
     setlists: 500,
     setlistItems: 5000,
     setlistName: 100,
+    totalHistoryEntries: 100000,
+    totalSetlistItems: 20000,
+    exportBytes: 20 * 1024 * 1024,
   };
 
   function assertPlainObject(value, label) {
@@ -116,6 +119,10 @@ const UtaLogData = (() => {
       };
     });
     const sourceIds = new Set();
+    const totalHistory = validated.reduce((total, song) => total + song.scores.length + song.sungDates.length, 0);
+    if (totalHistory > LIMITS.totalHistoryEntries) {
+      throw new Error("履歴の合計件数が上限を超えています");
+    }
     validated.forEach(song => {
       if (!song.sourceId) return;
       if (sourceIds.has(song.sourceId)) throw new Error("曲IDが重複しています");
@@ -129,12 +136,15 @@ const UtaLogData = (() => {
     if (!Array.isArray(rawSetlists) || rawSetlists.length > LIMITS.setlists) {
       throw new Error("バックアップ内のセットリスト形式が不正です");
     }
+    let totalItems = 0;
     return rawSetlists.map((raw, index) => {
       assertPlainObject(raw, `${index + 1}件目のセットリスト`);
       const name = checkedString(raw.name, `${index + 1}件目のセットリスト名`, LIMITS.setlistName, true);
       if (!Array.isArray(raw.items) || raw.items.length > LIMITS.setlistItems) {
         throw new Error(`「${name}」の曲数が上限を超えています`);
       }
+      totalItems += raw.items.length;
+      if (totalItems > LIMITS.totalSetlistItems) throw new Error("セットリストの合計曲数が上限を超えています");
       const items = raw.items.map((item, itemIndex) => {
         assertPlainObject(item, `「${name}」の${itemIndex + 1}曲目`);
         const next = {

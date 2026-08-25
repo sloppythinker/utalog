@@ -52,6 +52,25 @@
     assert(list.items[0].sungAt === 2, "歌唱記録との関連を保持できていない");
   });
 
+  test("全曲合計の履歴上限を拒否する", () => {
+    const dates = Array(LIMITS.sungDates).fill(1);
+    const songs = Array.from({ length: 11 }, (_, i) => ({ title: `song-${i}`, sungDates: dates }));
+    assertThrows(
+      () => validateIncomingSongs(songs),
+      "合計履歴上限を超えたデータを受け入れた",
+    );
+  });
+
+  test("セットリスト項目の合計上限を拒否する", () => {
+    const item = { id: "s1" };
+    const perList = Math.floor(LIMITS.totalSetlistItems / 5) + 1;
+    const lists = Array.from({ length: 5 }, (_, i) => ({
+      name: `list-${i}`,
+      items: Array(perList).fill(item),
+    }));
+    assertThrows(() => validateBackupSetlists(lists), "合計項目上限を超えたデータを受け入れた");
+  });
+
   const lines = [];
   let failed = 0;
   tests.forEach(({ name, fn }) => {
