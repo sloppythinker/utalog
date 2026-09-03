@@ -35,6 +35,7 @@
   let editArtworkUrl = "";
   let editScores = [];
   let editSungDates = [];
+  let scoreSungDates = new Map();
   let editInitialSnapshot = "";
   let isSavingEdit = false;
   let suggestTimer = null;
@@ -783,6 +784,7 @@
     editArtworkUrl = song ? song.artworkUrl || "" : "";
     editScores = song ? [...(song.scores || [])] : [];
     editSungDates = song ? [...(song.sungDates || [])] : [];
+    scoreSungDates = new Map();
     $("btnDelete").classList.toggle("hidden", !song);
     $("btnEditToSetlist").classList.toggle("hidden", !song);
     hideSuggest();
@@ -926,6 +928,13 @@
       row.innerHTML = `<span>${entry.score} 点</span><span class="score-date">${fmtDate(entry.date)}</span><button class="score-del" aria-label="削除">✕</button>`;
       row.querySelector(".score-del").onclick = () => {
         editScores = editScores.filter(x => x !== entry);
+        const sungAt = scoreSungDates.get(entry);
+        if (sungAt !== undefined) {
+          const sungIndex = editSungDates.lastIndexOf(sungAt);
+          if (sungIndex >= 0) editSungDates.splice(sungIndex, 1);
+          scoreSungDates.delete(entry);
+          updateSungView();
+        }
         renderScoreSection();
       };
       hist.appendChild(row);
@@ -970,11 +979,21 @@
 
   function addScore() {
     if (editScores.length >= LIMITS.scores) { toast("スコア履歴が上限に達しています"); return; }
+    if (editSungDates.length >= LIMITS.sungDates) { toast("歌唱履歴が上限に達しています"); return; }
     const v = parseFloat($("inputScore").value);
     if (isNaN(v) || v < 0 || v > 100) { toast("0〜100の点数を入力してください"); return; }
-    editScores.push({ score: Math.round(v * 10) / 10, date: Date.now() });
+    if (historyEntryCount(editingId) + editScores.length + editSungDates.length + 2 > LIMITS.totalHistoryEntries) {
+      toast("履歴の合計件数が上限に達しています");
+      return;
+    }
+    const now = Date.now();
+    const entry = { score: Math.round(v * 10) / 10, date: now };
+    editScores.push(entry);
+    editSungDates.push(now);
+    scoreSungDates.set(entry, now);
     $("inputScore").value = "";
     renderScoreSection();
+    updateSungView();
   }
 
   // 歌唱記録
