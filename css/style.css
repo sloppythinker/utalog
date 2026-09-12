@@ -1398,3 +1398,21 @@ html, body {
 .kana-jump button:disabled { color: var(--text-dim); opacity: 0.35; }
 .kana-jump button:active:not(:disabled) { color: var(--accent2); }
 .song-card { scroll-margin-top: calc(118px + var(--safe-top)); }
+
+/* 採点・歌唱日時の入力はスマホ幅でも折り返す。 */
+#scoreSungTarget, #inputSungDate, .score-row input[type="datetime-local"],
+#unscoredDates input {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+#scoreSungTarget, #inputSungDate, #unscoredDates input { width: 100%; }
+.score-row { flex-wrap: wrap; }
+.score-row input[type="datetime-local"] { flex-basis: 100%; }
+#unscoredDates label { display: block; margin-top: 8px; }

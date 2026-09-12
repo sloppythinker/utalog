@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "utalog-";
-const CACHE = "utalog-v16";
+const CACHE = "utalog-v17";
 const ASSETS = [
   "./",
   "./index.html",
