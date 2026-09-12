@@ -776,6 +776,7 @@
     $("inputArtist").value = song ? song.artist || "" : "";
     $("inputMemo").value = song ? song.memo || "" : "";
     $("inputScore").value = "";
+    $("inputSungDate").value = localDateTime(Date.now());
     editKey = song ? song.key || 0 : 0;
     editRating = song ? song.rating || 0 : 0;
     editPracticing = song ? !!song.practicing : false;
@@ -785,6 +786,7 @@
     editScores = song ? [...(song.scores || [])] : [];
     editSungDates = song ? [...(song.sungDates || [])] : [];
     scoreSungDates = new Map();
+    $("scoreSungTarget").replaceChildren();
     $("btnDelete").classList.toggle("hidden", !song);
     $("btnEditToSetlist").classList.toggle("hidden", !song);
     hideSuggest();
@@ -813,6 +815,7 @@
     const title = $("inputTitle").value.trim();
     if (!title) { toast("曲名を入力してください"); return; }
     isSavingEdit = true;
+    $("editModal").inert = true;
     const saveButton = $("btnSaveEdit");
     saveButton.disabled = true;
     const originalLabel = saveButton.textContent;
@@ -863,10 +866,13 @@
           renderList();
         }).catch(error => diagnostic("artwork-failed", error && error.name));
       }
+      return song;
     } catch (e) {
       reportError("曲の保存", e);
+      return null;
     } finally {
       isSavingEdit = false;
+      $("editModal").inert = false;
       saveButton.disabled = false;
       saveButton.textContent = originalLabel;
     }
@@ -918,11 +924,17 @@
     const bestEl = $("bestScore");
     const best = editScores.length ? Math.max(...editScores.map(x => x.score)) : null;
     bestEl.classList.toggle("hidden", best === null);
-    if (best !== null) bestEl.innerHTML = `ベスト <strong>${best}</strong> 点`;
+    if (best !== null) {
+      const ordered = [...editScores].reverse().sort((a, b) => b.date - a.date);
+      const latest = ordered[0].score, previous = ordered[1]?.score;
+      const delta = previous === undefined ? null : Math.round((latest - previous) * 10) / 10;
+      bestEl.textContent = `自己ベスト ${best}点 ／ 直近 ${latest}点 ／ 前回 ${previous === undefined ? "なし" : previous + "点"}${delta === null ? "" : ` ／ 前回比 ${delta > 0 ? "+" : ""}${delta}点`}`;
+    }
+    renderSungTargets();
     renderScoreChart();
     const hist = $("scoreHistory");
     hist.innerHTML = "";
-    [...editScores].sort((a, b) => b.date - a.date).forEach(entry => {
+    [...editScores].reverse().sort((a, b) => b.date - a.date).forEach(entry => {
       const row = document.createElement("div");
       row.className = "score-row";
       row.innerHTML = `<span>${entry.score} 点</span><span class="score-date">${fmtDate(entry.date)}</span><button class="score-del" aria-label="削除">✕</button>`;
@@ -937,6 +949,20 @@
         }
         renderScoreSection();
       };
+      const dateInput = document.createElement("input");
+      dateInput.type = "datetime-local";
+      dateInput.setAttribute("aria-label", "歌った日時を変更");
+      dateInput.value = localDateTime(entry.date);
+      dateInput.onchange = () => {
+        const timestamp = new Date(dateInput.value).getTime();
+        if (!Number.isFinite(timestamp) || timestamp <= 0) { dateInput.value = localDateTime(entry.date); return; }
+        const index = editSungDates.indexOf(entry.date);
+        if (index >= 0) editSungDates[index] = timestamp;
+        const updated = { ...entry, date: timestamp };
+        editScores = editScores.map(item => item === entry ? updated : item);
+        renderScoreSection(); updateSungView();
+      };
+      row.appendChild(dateInput);
       hist.appendChild(row);
     });
   }
@@ -977,23 +1003,64 @@
     chart.classList.remove("hidden");
   }
 
-  function addScore() {
-    if (editScores.length >= LIMITS.scores) { toast("スコア履歴が上限に達しています"); return; }
-    if (editSungDates.length >= LIMITS.sungDates) { toast("歌唱履歴が上限に達しています"); return; }
-    const v = parseFloat($("inputScore").value);
-    if (isNaN(v) || v < 0 || v > 100) { toast("0〜100の点数を入力してください"); return; }
-    if (historyEntryCount(editingId) + editScores.length + editSungDates.length + 2 > LIMITS.totalHistoryEntries) {
-      toast("履歴の合計件数が上限に達しています");
-      return;
+  function localDateTime(timestamp) {
+    const date = new Date(timestamp);
+    return new Date(timestamp - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  }
+
+  function renderSungTargets() {
+    const select = $("scoreSungTarget");
+    const old = select.value;
+    select.replaceChildren(new Option("新しく歌った1回として追加", "new"));
+    const used = new Map();
+    editScores.forEach(entry => used.set(entry.date, (used.get(entry.date) || 0) + 1));
+    const available = [];
+    editSungDates.forEach((date, index) => {
+      if (used.get(date)) { used.set(date, used.get(date) - 1); return; }
+      available.push({date, index});
+    });
+    available.sort((a, b) => b.date - a.date).forEach(({date, index}) => {
+      select.add(new Option(`${localDateTime(date).replace("T", " ")} の歌唱に採点を追加`, String(index)));
+    });
+    if ([...select.options].some(option => option.value === old)) select.value = old;
+    else {
+      const today = available.find(item => new Date(item.date).toDateString() === new Date().toDateString());
+      select.value = today ? String(today.index) : "new";
     }
+    $("inputSungDate").disabled = select.value !== "new";
+    if (select.value !== "new") $("inputSungDate").value = localDateTime(editSungDates[Number(select.value)]);
+  }
+
+  async function addScore() {
+    if (isSavingEdit) return;
+    const raw = $("inputScore").value.trim();
+    const v = Number(raw);
+    if (!raw || !Number.isFinite(v) || v < 0 || v > 100) { toast("0〜100の点数を入力してください"); return; }
+    const linked = $("scoreSungTarget").value !== "new";
     const now = Date.now();
-    const entry = { score: Math.round(v * 10) / 10, date: now };
-    editScores.push(entry);
-    editSungDates.push(now);
-    scoreSungDates.set(entry, now);
-    $("inputScore").value = "";
-    renderScoreSection();
-    updateSungView();
+    const timestamp = linked ? editSungDates[Number($("scoreSungTarget").value)] : $("inputSungDate").value === localDateTime(now) ? now : new Date($("inputSungDate").value).getTime();
+    if (!Number.isFinite(timestamp) || timestamp <= 0) { toast("歌った日時を入力してください"); return; }
+    if (editScores.length >= LIMITS.scores || (!linked && editSungDates.length >= LIMITS.sungDates)) { toast("履歴が上限に達しています"); return; }
+    const previousScores = [...editScores], previousDates = [...editSungDates];
+    const entry = { score: Math.round(v * 10) / 10, date: timestamp };
+    editScores = [...editScores, entry];
+    if (!linked) editSungDates = [...editSungDates, timestamp];
+    const saved = await saveEdit();
+    if (!saved) { editScores = previousScores; editSungDates = previousDates; return; }
+    const today = new Date(timestamp).toDateString() === new Date().toDateString();
+    toast(linked ? "歌唱記録に採点を保存しました" : today ? "今日うたったに追加しました" : "指定した日の歌唱履歴に追加しました", "取り消す", async () => {
+      const current = songs.find(song => song.id === saved.id);
+      if (!current || !current.scores.includes(entry)) return;
+      const dates = [...current.sungDates];
+      if (!linked) { const index = dates.lastIndexOf(timestamp); if (index >= 0) dates.splice(index, 1); }
+      const next = { ...current, scores: current.scores.filter(score => score !== entry), sungDates: dates, updatedAt: Date.now() };
+      syncSungFields(next);
+      await DB.put(next);
+      Object.assign(current, next);
+      if (editingId === next.id) openEdit(next.id);
+      render();
+      toast("採点の保存を取り消しました");
+    });
   }
 
   // 歌唱記録
@@ -1002,6 +1069,25 @@
       ? `${editSungDates.length}回（最終: ${fmtDate(Math.max(...editSungDates))}）`
       : "まだ記録なし";
     $("btnSungUndo").disabled = editSungDates.length === 0;
+    const datesBox = $("unscoredDates");
+    datesBox.replaceChildren();
+    const used = new Map();
+    editScores.forEach(entry => used.set(entry.date, (used.get(entry.date) || 0) + 1));
+    editSungDates.forEach((date, index) => {
+      if (used.get(date)) { used.set(date, used.get(date) - 1); return; }
+      const label = document.createElement("label");
+      label.textContent = "未採点の歌唱日時";
+      const input = document.createElement("input");
+      input.type = "datetime-local";
+      input.value = localDateTime(date);
+      input.onchange = () => {
+        const timestamp = new Date(input.value).getTime();
+        if (!Number.isFinite(timestamp) || timestamp <= 0) { input.value = localDateTime(date); return; }
+        editSungDates[index] = timestamp;
+        renderSungTargets(); updateSungView();
+      };
+      label.appendChild(input); datesBox.appendChild(label);
+    });
   }
 
   // タグピッカー
@@ -1942,6 +2028,11 @@
     updatePracticingView();
   };
 
+  $("scoreSungTarget").onchange = () => {
+    const value = $("scoreSungTarget").value;
+    $("inputSungDate").disabled = value !== "new";
+    $("inputSungDate").value = localDateTime(value === "new" ? Date.now() : editSungDates[Number(value)]);
+  };
   $("btnAddScore").onclick = addScore;
   $("inputScore").addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); addScore(); }
@@ -1949,6 +2040,8 @@
 
   $("btnSungToday").onclick = () => {
     editSungDates.push(Date.now());
+    $("scoreSungTarget").value = "";
+    renderSungTargets();
     updateSungView();
     toast("保存すると記録されます");
   };
@@ -1956,6 +2049,7 @@
     if (!editSungDates.length) return;
     const latest = Math.max(...editSungDates);
     editSungDates.splice(editSungDates.lastIndexOf(latest), 1);
+    renderSungTargets();
     updateSungView();
     toast("1回分取り消しました（保存で確定）");
   };

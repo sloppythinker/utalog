@@ -159,8 +159,13 @@
         <div id="scoreChart" class="score-chart hidden"></div>
         <div class="tag-add-row">
           <input type="number" id="inputScore" placeholder="例: 92.5" step="0.1" min="0" max="100" inputmode="decimal">
-          <button type="button" id="btnAddScore" class="mini-btn">記録</button>
+          <button type="button" id="btnAddScore" class="mini-btn">採点・歌唱を保存</button>
         </div>
+        <label for="scoreSungTarget">歌唱記録</label>
+        <select id="scoreSungTarget"></select>
+        <label for="inputSungDate">歌った日時</label>
+        <input type="datetime-local" id="inputSungDate">
+        <p class="hint">採点と一緒に、この画面の曲情報も保存します。過去の日時変更は上部の「保存」で確定します。</p>
         <div id="scoreHistory" class="score-history"></div>
       </div>
 
@@ -173,6 +178,7 @@
             <button type="button" id="btnSungToday" class="mini-btn">今日歌った +1</button>
           </div>
         </div>
+        <div id="unscoredDates"></div>
       </div>
 
       <div class="field">
