@@ -1124,11 +1124,36 @@
   }
 
   // ---------- 曲名・歌手名サジェスト ----------
+  function dismissSuggest(id) {
+    if (id === "suggestBox") {
+      clearTimeout(suggestTimer);
+      if (titleSuggestController) titleSuggestController.abort();
+    } else {
+      clearTimeout(artistSuggestTimer);
+      if (artistSuggestController) artistSuggestController.abort();
+    }
+    $(id).classList.add("hidden");
+    $(id).innerHTML = "";
+    $(id).setAttribute("aria-busy", "false");
+  }
+
   function hideSuggest() {
-    ["suggestBox", "suggestBoxArtist"].forEach(id => {
-      $(id).classList.add("hidden");
-      $(id).innerHTML = "";
-    });
+    ["suggestBox", "suggestBoxArtist"].forEach(dismissSuggest);
+  }
+
+  function suggestStatus(box, message, retry) {
+    const note = document.createElement("div");
+    note.className = "suggest-note";
+    note.textContent = message;
+    if (retry) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "再検索";
+      button.onclick = retry;
+      note.append(" ", button);
+    }
+    box.replaceChildren(note);
+    box.classList.remove("hidden");
   }
 
   // 矢印つきサジェストボックスを構築
@@ -1143,7 +1168,7 @@
     close.textContent = "✕";
     close.className = "suggest-close";
     close.setAttribute("aria-label", "候補を閉じる");
-    close.onclick = () => { box.classList.add("hidden"); box.innerHTML = ""; };
+    close.onclick = () => dismissSuggest(box.id);
     arrows.appendChild(close);
     [["▲", -1], ["▼", 1]].forEach(([label, dir]) => {
       const b = document.createElement("button");
@@ -1164,30 +1189,46 @@
 
   async function showSuggest(term) {
     const box = $("suggestBox");
-    if (navigator.onLine === false) {
-      box.textContent = "オフラインのため候補検索を利用できません（手入力は可能です）";
-      box.classList.remove("hidden");
-      return;
-    }
     if (titleSuggestController) titleSuggestController.abort();
     titleSuggestController = new AbortController();
     const options = { signal: titleSuggestController.signal };
+    const isCurrent = () => !options.signal.aborted && $("inputTitle").value.trim() === term &&
+      !$("editModal").classList.contains("hidden");
+    if (navigator.onLine === false) {
+      suggestStatus(box, "オフラインのため候補検索を利用できません（手入力は可能です）", () => showSuggest(term));
+      return;
+    }
+    suggestStatus(box, "曲名の候補を検索中…");
+    box.setAttribute("aria-busy", "true");
     // 歌手名が入力済みなら「歌手名+曲名」でも検索し、その歌手の曲を優先
     const artistTerm = $("inputArtist").value.trim();
     let results;
-    if (artistTerm) {
-      const [byArtist, plain] = await Promise.all([
-        ITunes.search(artistTerm + " " + term, 8, options),
-        ITunes.search(term, 8, options),
-      ]);
-      results = byArtist.concat(plain);
-    } else {
-      results = await ITunes.search(term, 8, options);
+    try {
+      if (artistTerm) {
+        const searches = await Promise.allSettled([
+          ITunes.search(artistTerm + " " + term, 8, options),
+          ITunes.search(term, 8, options),
+        ]);
+        const successful = searches.filter(result => result.status === "fulfilled");
+        if (!successful.length) throw searches[0].reason;
+        results = successful.flatMap(result => result.value);
+      } else {
+        results = await ITunes.search(term, 8, options);
+      }
+    } catch (error) {
+      if (isCurrent()) {
+        diagnostic("suggest-failed", error && error.name);
+        suggestStatus(box, "候補を取得できませんでした。手入力するか再検索してください。", () => showSuggest(term));
+      }
+      return;
+    } finally {
+      if (isCurrent()) box.setAttribute("aria-busy", "false");
     }
-    if ($("inputTitle").value.trim() !== term) return; // 入力が変わっていたら破棄
-    // 曲名にマッチする候補だけ残す（歌手名だけの一致は除外）
+    if (!isCurrent()) return;
+    // 曲名一致を優先。表記揺れや「歌手名 曲名」の入力でもAPIの候補を捨てない。
     const nt = normSearch(term);
-    results = results.filter(r => normSearch(r.title).includes(nt));
+    const matched = results.filter(r => normSearch(r.title).includes(nt));
+    if (matched.length) results = matched;
     const na = normSearch(artistTerm);
     if (na) {
       results.sort((a, b) =>
@@ -1199,7 +1240,10 @@
       const k = normSearch(r.title) + "\n" + normSearch(r.artist);
       return seen.has(k) ? false : (seen.add(k), true);
     }).slice(0, 8);
-    if (results.length === 0) { $("suggestBox").classList.add("hidden"); return; }
+    if (results.length === 0) {
+      suggestStatus(box, "候補が見つかりませんでした。曲名を変えるか、そのまま手入力してください。");
+      return;
+    }
     const rows = results.map(r => {
       const item = document.createElement("div");
       item.className = "suggest-item";
@@ -1217,26 +1261,44 @@
       };
       return item;
     });
-    buildSuggestBox(box, rows, "曲名の候補（そのまま手入力もOK）");
+    buildSuggestBox(box, rows, matched.length ? "曲名の候補（そのまま手入力もOK）" : "入力に関連する候補（曲名・歌手名を確認してください）");
   }
 
   async function showArtistSuggest(term) {
     const box = $("suggestBoxArtist");
-    if (navigator.onLine === false) {
-      box.textContent = "オフラインのため候補検索を利用できません（手入力は可能です）";
-      box.classList.remove("hidden");
-      return;
-    }
     if (artistSuggestController) artistSuggestController.abort();
     artistSuggestController = new AbortController();
-    let results = await ITunes.searchArtists(term, 6, { signal: artistSuggestController.signal });
-    if ($("inputArtist").value.trim() !== term) return;
+    const signal = artistSuggestController.signal;
+    const isCurrent = () => !signal.aborted && $("inputArtist").value.trim() === term &&
+      !$("editModal").classList.contains("hidden");
+    if (navigator.onLine === false) {
+      suggestStatus(box, "オフラインのため候補検索を利用できません（手入力は可能です）", () => showArtistSuggest(term));
+      return;
+    }
+    suggestStatus(box, "歌手名の候補を検索中…");
+    box.setAttribute("aria-busy", "true");
+    let results;
+    try {
+      results = await ITunes.searchArtists(term, 6, { signal });
+    } catch (error) {
+      if (isCurrent()) {
+        diagnostic("artist-suggest-failed", error && error.name);
+        suggestStatus(box, "候補を取得できませんでした。手入力するか再検索してください。", () => showArtistSuggest(term));
+      }
+      return;
+    } finally {
+      if (isCurrent()) box.setAttribute("aria-busy", "false");
+    }
+    if (!isCurrent()) return;
     // 歌手名にマッチするものを優先（マッチゼロなら上位候補をそのまま表示）
     const nt = normSearch(term);
     const matched = results.filter(a => normSearch(a.name).includes(nt));
     if (matched.length) results = matched;
     results = results.slice(0, 6);
-    if (results.length === 0) { box.classList.add("hidden"); return; }
+    if (results.length === 0) {
+      suggestStatus(box, "候補が見つかりませんでした。歌手名を変えるか、そのまま手入力してください。");
+      return;
+    }
     const rows = results.map(a => {
       const item = document.createElement("div");
       item.className = "suggest-item";
@@ -2077,34 +2139,38 @@
     if (e.key === "Enter") { e.preventDefault(); addNewTag(); }
   });
 
-  $("inputTitle").addEventListener("input", (e) => {
+  function scheduleTitleSuggest(e) {
     editArtworkUrl = "";
-    clearTimeout(suggestTimer);
+    dismissSuggest("suggestBox");
+    if (e.isComposing) return;
     const term = e.target.value.trim();
     if (term.length < 1) { hideSuggest(); return; }
     suggestTimer = setTimeout(() => showSuggest(term).catch(error => {
       if (!error || error.name !== "AbortError") diagnostic("suggest-failed", error && error.name);
     }), 350);
-  });
+  }
+  $("inputTitle").addEventListener("input", scheduleTitleSuggest);
+  $("inputTitle").addEventListener("compositionend", scheduleTitleSuggest);
 
-  $("inputArtist").addEventListener("input", (e) => {
-    clearTimeout(artistSuggestTimer);
+  function scheduleArtistSuggest(e) {
+    dismissSuggest("suggestBoxArtist");
+    if (e.isComposing) return;
     const term = e.target.value.trim();
     if (term.length < 1) { hideSuggest(); return; }
     artistSuggestTimer = setTimeout(() => showArtistSuggest(term).catch(error => {
       if (!error || error.name !== "AbortError") diagnostic("artist-suggest-failed", error && error.name);
     }), 350);
-  });
+  }
+  $("inputArtist").addEventListener("input", scheduleArtistSuggest);
+  $("inputArtist").addEventListener("compositionend", scheduleArtistSuggest);
 
   // 候補リストの外側をタップしたら閉じる（候補が邪魔で他の欄に入力できない対策）
   document.addEventListener("pointerdown", (e) => {
     const wrap = e.target.closest(".suggest-wrap");
     ["suggestBox", "suggestBoxArtist"].forEach(id => {
       const box = $(id);
-      if (box.classList.contains("hidden")) return;
       if (!wrap || !wrap.contains(box)) {
-        box.classList.add("hidden");
-        box.innerHTML = "";
+        dismissSuggest(id);
       }
     });
   });
