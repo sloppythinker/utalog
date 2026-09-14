@@ -3,6 +3,26 @@
 const ITunes = (() => {
   const CACHE_TTL = 10 * 60 * 1000;
   const cache = new Map();
+  let musicBrainzQueue = Promise.resolve();
+  let lastMusicBrainzRequest = -Infinity;
+
+  function checkAbort(signal) {
+    if (signal && signal.aborted) throw new DOMException("Aborted", "AbortError");
+  }
+
+  // 曲名・歌手名検索を合わせて1秒に1回までにする。
+  function musicBrainzJson(url, signal) {
+    const request = musicBrainzQueue.then(async () => {
+      checkAbort(signal);
+      const wait = Math.max(0, 1100 - (performance.now() - lastMusicBrainzRequest));
+      if (wait) await new Promise(resolve => setTimeout(resolve, wait));
+      checkAbort(signal);
+      lastMusicBrainzRequest = performance.now();
+      return fetchJson(url, 6000, signal);
+    });
+    musicBrainzQueue = request.catch(() => {});
+    return request;
+  }
 
   async function fetchJson(url, ms, externalSignal) {
     const ctl = new AbortController();
@@ -16,6 +36,10 @@ const ITunes = (() => {
       const res = await fetch(url, { signal: ctl.signal });
       if (!res.ok) throw new Error("HTTP " + res.status);
       return await res.json();
+    } catch (error) {
+      checkAbort(externalSignal);
+      if (ctl.signal.aborted) throw new DOMException("検索がタイムアウトしました", "TimeoutError");
+      throw error;
     } finally {
       clearTimeout(timer);
       if (externalSignal) externalSignal.removeEventListener("abort", abort);
@@ -44,69 +68,81 @@ const ITunes = (() => {
     };
   }
 
-  // 曲名検索（曲名にマッチする候補。歌手名だけの一致は呼び出し側で除外）
+  // 曲名検索（呼び出し側で曲名一致を優先し、関連候補も表示する）
   async function search(term, limit = 8, options = {}) {
+    checkAbort(options.signal);
     if (!term.trim()) return [];
     const key = `song:${term.trim().toLowerCase()}:${limit}`;
     return cached(key, async () => {
-    try {
-      const data = await fetchJson(itunesUrl({ term, entity: "song", limit: String(limit * 3) }), 5000, options.signal);
-      const out = (data.results || []).map(mapItunesSong).filter(r => r.title);
-      if (out.length) return out;
-    } catch (e) { /* iPhone Safari等 */ }
-    if (options.signal && options.signal.aborted) throw new DOMException("Aborted", "AbortError");
-    try {
-      const data = await fetchJson("https://musicbrainz.org/ws/2/recording?" +
-        new URLSearchParams({ query: term, fmt: "json", limit: String(limit * 3) }), 5000, options.signal);
-      const seen = new Set();
-      const out = [];
-      for (const r of data.recordings || []) {
-        const title = r.title || "";
-        const artist = (r["artist-credit"] && r["artist-credit"][0] && r["artist-credit"][0].name) || "";
-        if (!title) continue;
-        const k = title + "\n" + artist;
-        if (seen.has(k)) continue;
-        seen.add(k);
-        out.push({ title, artist, artworkUrl: "" });
+      let responded = false;
+      try {
+        const data = await fetchJson(itunesUrl({ term, entity: "song", limit: String(limit * 3) }), 5000, options.signal);
+        if (!Array.isArray(data.results)) throw new Error("検索結果の形式が不正です");
+        responded = true;
+        const out = (data.results || []).map(mapItunesSong).filter(r => r.title);
+        if (out.length) return out;
+      } catch (e) { /* 通信失敗・タイムアウト時は予備の検索先へ */ }
+      checkAbort(options.signal);
+      try {
+        const data = await musicBrainzJson("https://musicbrainz.org/ws/2/recording?" +
+          new URLSearchParams({ query: term, fmt: "json", limit: String(limit * 3) }), options.signal);
+        if (!Array.isArray(data.recordings)) throw new Error("検索結果の形式が不正です");
+        const seen = new Set();
+        const out = [];
+        for (const r of data.recordings || []) {
+          const title = r.title || "";
+          const artist = (r["artist-credit"] && r["artist-credit"][0] && r["artist-credit"][0].name) || "";
+          if (!title) continue;
+          const k = title + "\n" + artist;
+          if (seen.has(k)) continue;
+          seen.add(k);
+          out.push({ title, artist, artworkUrl: "" });
+        }
+        return out;
+      } catch (e) {
+        checkAbort(options.signal);
+        if (responded) return [];
+        throw new Error("候補を取得できませんでした。通信状態を確認して再検索してください。");
       }
-      return out;
-    } catch (e) {
-      if (e && e.name === "AbortError") throw e;
-      return [];
-    }
     });
   }
 
   // 歌手名検索（歌手のみ返す。曲は返さない）
   async function searchArtists(term, limit = 6, options = {}) {
+    checkAbort(options.signal);
     if (!term.trim()) return [];
     const key = `artist:${term.trim().toLowerCase()}:${limit}`;
     return cached(key, async () => {
-    try {
-      const data = await fetchJson(itunesUrl({ term, entity: "song", attribute: "artistTerm", limit: "25" }), 5000, options.signal);
-      const seen = new Set();
-      const out = [];
-      for (const r of data.results || []) {
-        const name = r.artistName || "";
-        if (!name || seen.has(name)) continue;
-        seen.add(name);
-        out.push({ name, artworkUrl: (r.artworkUrl100 || "").replace("100x100", "200x200") });
-        if (out.length >= limit) break;
+      let responded = false;
+      try {
+        const data = await fetchJson(itunesUrl({ term, entity: "song", attribute: "artistTerm", limit: "25" }), 5000, options.signal);
+        if (!Array.isArray(data.results)) throw new Error("検索結果の形式が不正です");
+        responded = true;
+        const seen = new Set();
+        const out = [];
+        for (const r of data.results || []) {
+          const name = r.artistName || "";
+          if (!name || seen.has(name)) continue;
+          seen.add(name);
+          out.push({ name, artworkUrl: (r.artworkUrl100 || "").replace("100x100", "200x200") });
+          if (out.length >= limit) break;
+        }
+        if (out.length) return out;
+      } catch (e) { /* 通信失敗・タイムアウト時は予備の検索先へ */ }
+      checkAbort(options.signal);
+      try {
+        const data = await musicBrainzJson("https://musicbrainz.org/ws/2/artist?" +
+          new URLSearchParams({ query: term, fmt: "json", limit: String(limit) }), options.signal);
+        if (!Array.isArray(data.artists)) throw new Error("検索結果の形式が不正です");
+        return (data.artists || []).map(a => ({
+          name: a.name || "",
+          artworkUrl: "",
+        })).filter(a => a.name);
+      } catch (e) {
+        checkAbort(options.signal);
+        if (responded) return [];
+        throw new Error("候補を取得できませんでした。通信状態を確認して再検索してください。");
       }
-      if (out.length) return out;
-    } catch (e) { /* iPhone Safari等 */ }
-    if (options.signal && options.signal.aborted) throw new DOMException("Aborted", "AbortError");
-    try {
-      const data = await fetchJson("https://musicbrainz.org/ws/2/artist?" +
-        new URLSearchParams({ query: term, fmt: "json", limit: String(limit) }), 5000, options.signal);
-      return (data.artists || []).map(a => ({
-        name: a.name || "",
-        artworkUrl: "",
-      })).filter(a => a.name);
-    } catch (e) {
-      if (e && e.name === "AbortError") throw e;
-      return [];
-    }
     });
   }
 
