@@ -1,10 +1,12 @@
 // インポート・共有データの検証とサイズ制限（DOMに依存しない純粋ロジック）
 const UtaLogData = (() => {
+  const BACKUP_BYTES = 20 * 1024 * 1024;
   const LIMITS = {
-    importBytes: 5 * 1024 * 1024,
+    importBytes: BACKUP_BYTES,
     shareBytes: 1024 * 1024,
     encodedShareChars: 2 * 1024 * 1024,
     songs: 5000,
+    legacyBackupSongs: 10000, // 旧版で通常上限を超えて保存されたバックアップの復旧用
     shareSongs: 1000,
     title: 200,
     artist: 200,
@@ -19,7 +21,7 @@ const UtaLogData = (() => {
     setlistName: 100,
     totalHistoryEntries: 100000,
     totalSetlistItems: 20000,
-    exportBytes: 20 * 1024 * 1024,
+    exportBytes: BACKUP_BYTES,
   };
 
   function assertPlainObject(value, label) {
