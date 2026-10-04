@@ -45,8 +45,14 @@ const DB = (() => {
     return open().then(db => new Promise((resolve, reject) => {
       const t = db.transaction(STORE, mode);
       const store = t.objectStore(STORE);
-      const result = fn(store);
+      let result;
       let settled = false;
+      const abort = error => {
+        if (settled) return;
+        try { t.abort(); } catch (_) { /* 既に中断済み */ }
+        settled = true;
+        reject(error);
+      };
       t.oncomplete = () => {
         if (settled) return;
         settled = true;
@@ -59,6 +65,8 @@ const DB = (() => {
       };
       t.onerror = fail;
       t.onabort = fail;
+      try { result = fn(store, abort); }
+      catch (error) { abort(error); }
     }));
   }
 
@@ -70,16 +78,76 @@ const DB = (() => {
     }));
   }
 
-  function put(song) {
-    return tx("readwrite", store => { store.put(song); return song; });
+  function snapshot(song) {
+    // オブジェクトのプロパティ順の違いを更新競合と誤認しない。
+    return song == null ? null : JSON.stringify(song, (_, value) =>
+      value && typeof value === "object" && !Array.isArray(value)
+        ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]]))
+        : value);
   }
 
-  function bulkPut(songs) {
-    return tx("readwrite", store => { songs.forEach(s => store.put(s)); return songs.length; });
+  function conflict() {
+    const error = new Error("別の画面で曲が変更されています。入力は残しています。一度閉じて最新の内容を開き直してください");
+    error.name = "ConflictError";
+    return error;
   }
 
-  function remove(id) {
-    return tx("readwrite", store => { store.delete(id); });
+  function bulkPut(songs, options = {}) {
+    return tx("readwrite", (store, abort) => {
+      const write = () => {
+        try { songs.forEach(song => store.put(song)); }
+        catch (error) { abort(error); }
+      };
+      if (!songs.length) return 0;
+      if (!options.expected && !options.maxSongs) {
+        write();
+        return songs.length;
+      }
+      let remaining = songs.length;
+      let additions = 0;
+      songs.forEach(song => {
+        const request = store.get(song.id);
+        request.onsuccess = () => {
+          try {
+            if (options.expected && (!options.expected.has(song.id) ||
+                snapshot(request.result) !== options.expected.get(song.id))) {
+              abort(conflict());
+              return;
+            }
+            if (!request.result) additions++;
+            if (--remaining) return;
+            if (options.maxSongs && additions) {
+              const count = store.count();
+              count.onsuccess = () => {
+                if (count.result + additions > options.maxSongs) {
+                  abort(new Error(`曲数が上限（${options.maxSongs}曲）を超えます`));
+                } else write();
+              };
+            } else write();
+          } catch (error) { abort(error); }
+        };
+      });
+      return songs.length;
+    });
+  }
+
+  function put(song, options = {}) {
+    const checked = { ...options };
+    if (Object.prototype.hasOwnProperty.call(options, "expected")) {
+      checked.expected = new Map([[song.id, options.expected]]);
+    }
+    return bulkPut([song], checked).then(() => song);
+  }
+
+  function remove(id, options = {}) {
+    return tx("readwrite", (store, abort) => {
+      if (!Object.prototype.hasOwnProperty.call(options, "expected")) { store.delete(id); return; }
+      const request = store.get(id);
+      request.onsuccess = () => {
+        if (snapshot(request.result) !== options.expected) { abort(conflict()); return; }
+        try { store.delete(id); } catch (error) { abort(error); }
+      };
+    });
   }
 
   function bulkRemove(ids) {
@@ -91,5 +159,5 @@ const DB = (() => {
       Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
   }
 
-  return { getAll, put, bulkPut, remove, bulkRemove, newId };
+  return { getAll, put, bulkPut, remove, bulkRemove, newId, snapshot };
 })();

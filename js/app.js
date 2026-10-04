@@ -37,7 +37,12 @@
   let editSungDates = [];
   let scoreSungDates = new Map();
   let editInitialSnapshot = "";
+  let editOriginalSong = null;
+  let editDateChanges = [];
   let isSavingEdit = false;
+  let importingCount = 0;
+  let pendingUpdateReload = false;
+  let refreshing = false;
   let suggestTimer = null;
   let artistSuggestTimer = null;
 
@@ -133,6 +138,9 @@
       ? "端末の空き容量を確認してください"
       : error && error.message ? error.message : "もう一度お試しください";
     toast(`${action}に失敗しました: ${detail}`);
+    if (error && error.name === "ConflictError") {
+      DB.getAll().then(list => { songs = list; render(); }).catch(() => {});
+    }
   }
 
   // ---------- 歌唱記録（sungDates = 歌った日時の配列） ----------
@@ -162,7 +170,7 @@
     }
     const next = { ...song, sungDates: [...(song.sungDates || []), timestamp], updatedAt: Date.now() };
     syncSungFields(next);
-    await DB.put(next);
+    await DB.put(next, { expected: DB.snapshot(song) });
     Object.assign(song, next);
     return timestamp;
   }
@@ -174,7 +182,7 @@
     dates.splice(index, 1);
     const next = { ...song, sungDates: dates, updatedAt: Date.now() };
     syncSungFields(next);
-    await DB.put(next);
+    await DB.put(next, { expected: DB.snapshot(song) });
     Object.assign(song, next);
     return true;
   }
@@ -765,17 +773,23 @@
       artworkUrl: editArtworkUrl,
       scores: editScores,
       sungDates: editSungDates,
+      scoreInput: $("inputScore").value,
+      newTagInput: $("inputNewTag").value,
+      sungDateInput: $("inputSungDate").value,
     });
   }
 
   function openEdit(id) {
     editingId = id || null;
     const song = id ? songs.find(s => s.id === id) : null;
+    editOriginalSong = DB.snapshot(song);
+    editDateChanges = [];
     $("editModalTitle").textContent = song ? "曲を編集" : "曲を追加";
     $("inputTitle").value = song ? song.title : "";
     $("inputArtist").value = song ? song.artist || "" : "";
     $("inputMemo").value = song ? song.memo || "" : "";
     $("inputScore").value = "";
+    $("inputNewTag").value = "";
     $("inputSungDate").value = localDateTime(Date.now());
     editKey = song ? song.key || 0 : 0;
     editRating = song ? song.rating || 0 : 0;
@@ -807,7 +821,49 @@
     $("editModal").classList.add("hidden");
     hideSuggest();
     editInitialSnapshot = "";
+    finishPendingUpdate();
     return true;
+  }
+
+  function hasPendingEdit() {
+    return !$("editModal").classList.contains("hidden") &&
+      currentEditSnapshot() !== editInitialSnapshot;
+  }
+
+  function finishPendingUpdate() {
+    if (!pendingUpdateReload || refreshing || isSavingEdit || importingCount || hasPendingEdit()) return;
+    refreshing = true;
+    location.reload();
+  }
+
+  async function saveSongWithReferences(song) {
+    // 参照の日時を先に保存し、曲保存の失敗時には元の参照へ戻す。
+    let previousRaw, nextRaw;
+    if (editingId && editDateChanges.length) {
+      previousRaw = localStorage.getItem(STORAGE_KEYS.setlists);
+      const updated = normalizeStoredSetlists(JSON.parse(previousRaw || "[]"));
+      let changed = false;
+      updated.forEach(list => list.items.forEach(item => {
+        if (item.id !== song.id) return;
+        editDateChanges.forEach(({ from, to }) => {
+          if (item.sungAt === from) { item.sungAt = to; changed = true; }
+        });
+      }));
+      if (changed) {
+        nextRaw = JSON.stringify(updated);
+        localStorage.setItem(STORAGE_KEYS.setlists, nextRaw);
+      }
+    }
+    try {
+      await DB.put(song, { expected: editOriginalSong, maxSongs: LIMITS.songs });
+    } catch (error) {
+      if (nextRaw !== undefined && localStorage.getItem(STORAGE_KEYS.setlists) === nextRaw) {
+        if (previousRaw === null) localStorage.removeItem(STORAGE_KEYS.setlists);
+        else localStorage.setItem(STORAGE_KEYS.setlists, previousRaw);
+      }
+      throw error;
+    }
+    if (nextRaw !== undefined) setlists = normalizeStoredSetlists(JSON.parse(localStorage.getItem(STORAGE_KEYS.setlists) || "[]"));
   }
 
   async function saveEdit() {
@@ -847,7 +903,8 @@
       if (historyEntryCount(song.id) + nextHistoryCount > LIMITS.totalHistoryEntries) {
         throw new Error("履歴の合計件数が上限を超えています");
       }
-      await DB.put(song);
+      if (!editingId && songs.length >= LIMITS.songs) throw new Error(`曲数が上限（${LIMITS.songs}曲）に達しています`);
+      await saveSongWithReferences(song);
       if (base) Object.assign(base, song); else songs.push(song);
       const wasEditing = !!editingId;
       closeEdit(true);
@@ -861,7 +918,7 @@
           const current = songs.find(item => item.id === song.id);
           if (!current || current.artworkUrl || current.artist !== artistName) return;
           const updated = { ...current, artworkUrl, updatedAt: Date.now() };
-          await DB.put(updated);
+          await DB.put(updated, { expected: DB.snapshot(current) });
           Object.assign(current, updated);
           renderList();
         }).catch(error => diagnostic("artwork-failed", error && error.name));
@@ -875,6 +932,7 @@
       $("editModal").inert = false;
       saveButton.disabled = false;
       saveButton.textContent = originalLabel;
+      finishPendingUpdate();
     }
   }
 
@@ -884,11 +942,11 @@
     if (!confirm(`「${song.title}」を削除しますか？`)) return;
     const previousSetlists = structuredClone(setlists);
     try {
-      await DB.remove(song.id);
+      await DB.remove(song.id, { expected: editOriginalSong });
       songs = songs.filter(s => s.id !== song.id);
       setlists.forEach(l => { l.items = l.items.filter(x => x.id !== song.id); });
       if (!saveSetlists()) {
-        await DB.put(song);
+        await DB.put(song, { expected: null });
         songs.push(song);
         setlists = previousSetlists;
         render();
@@ -957,7 +1015,10 @@
         const timestamp = new Date(dateInput.value).getTime();
         if (!Number.isFinite(timestamp) || timestamp <= 0) { dateInput.value = localDateTime(entry.date); return; }
         const index = editSungDates.indexOf(entry.date);
-        if (index >= 0) editSungDates[index] = timestamp;
+        if (index >= 0) {
+          editSungDates[index] = timestamp;
+          editDateChanges.push({ from: entry.date, to: timestamp });
+        }
         const updated = { ...entry, date: timestamp };
         editScores = editScores.map(item => item === entry ? updated : item);
         renderScoreSection(); updateSungView();
@@ -1055,7 +1116,7 @@
       if (!linked) { const index = dates.lastIndexOf(timestamp); if (index >= 0) dates.splice(index, 1); }
       const next = { ...current, scores: current.scores.filter(score => score !== entry), sungDates: dates, updatedAt: Date.now() };
       syncSungFields(next);
-      await DB.put(next);
+      await DB.put(next, { expected: DB.snapshot(current) });
       Object.assign(current, next);
       if (editingId === next.id) openEdit(next.id);
       render();
@@ -1084,6 +1145,7 @@
         const timestamp = new Date(input.value).getTime();
         if (!Number.isFinite(timestamp) || timestamp <= 0) { input.value = localDateTime(date); return; }
         editSungDates[index] = timestamp;
+        editDateChanges.push({ from: date, to: timestamp });
         renderSungTargets(); updateSungView();
       };
       label.appendChild(input); datesBox.appendChild(label);
@@ -1589,8 +1651,8 @@
   }
 
   // ---------- インポート（共通マージ処理） ----------
-  async function mergeSongs(incoming) {
-    const validated = validateIncomingSongs(incoming);
+  async function mergeSongs(incoming, maxSongs = LIMITS.songs) {
+    const validated = validateIncomingSongs(incoming, maxSongs);
     const existingByKey = new Map(songs.map(s => [normSearch(s.title) + "|" + normSearch(s.artist), s.id]));
     const now = Date.now();
     const added = [];
@@ -1630,7 +1692,8 @@
       throw new Error("取り込み後の履歴件数が上限を超えます");
     }
     if (added.length) {
-      await DB.bulkPut(added);
+      if (songs.length + added.length > maxSongs) throw new Error(`取り込み後の曲数が上限（${maxSongs}曲）を超えます`);
+      await DB.bulkPut(added, { maxSongs, expected: new Map(added.map(song => [song.id, null])) });
       songs.push(...added);
     }
     return { addedCount: added.length, duplicateCount, sourceIdMap, addedIds: added.map(song => song.id) };
@@ -1681,7 +1744,7 @@
           updatedAt: Date.now(),
         }));
         try {
-          await DB.bulkPut(changed);
+          await DB.bulkPut(changed, { expected: new Map(songs.map(song => [song.id, DB.snapshot(song)])) });
           const byId = new Map(changed.map(s => [s.id, s]));
           songs = songs.map(s => byId.get(s.id) || s);
           activeTags.delete(tag);
@@ -1849,6 +1912,7 @@
   }
 
   async function importJson(file) {
+    importingCount++;
     try {
       if (file.size > LIMITS.importBytes) {
         throw new Error(`ファイルサイズが上限（${LIMITS.importBytes / 1024 / 1024}MB）を超えています`);
@@ -1861,16 +1925,19 @@
         if (Number(data.version) > BACKUP_VERSION) throw new Error("このバックアップは新しいバージョンで作成されています");
       }
       // setlists も先に検証し、曲だけ入った後に形式エラーとなるのを防ぐ。
+      // 旧版のアプリ生成バックアップを復旧する場合に限り、通常上限超えを許容する。
+      const restoreLimit = data.app === "karaoke-repertoire" && incoming.length > LIMITS.songs
+        ? LIMITS.legacyBackupSongs : LIMITS.songs;
       const validatedSetlists = Array.isArray(data) ? [] : validateBackupSetlists(data.setlists);
       if (validatedSetlists.length) {
-        const sourceIds = new Set(validateIncomingSongs(incoming).map(song => song.sourceId).filter(Boolean));
+        const sourceIds = new Set(validateIncomingSongs(incoming, restoreLimit).map(song => song.sourceId).filter(Boolean));
         validatedSetlists.forEach(list => list.items.forEach(item => {
           if (!sourceIds.has(item.sourceId)) {
             throw new Error(`セットリスト「${list.name}」が存在しない曲を参照しています`);
           }
         }));
       }
-      const result = await mergeSongs(incoming);
+      const result = await mergeSongs(incoming, restoreLimit);
       let importedSetlists = 0;
       try {
         importedSetlists = importSetlists(validatedSetlists, result.sourceIdMap);
@@ -1887,6 +1954,9 @@
     } catch (e) {
       toast("インポート失敗: " + e.message);
       console.error("[うたログ] インポート失敗", e);
+    } finally {
+      importingCount--;
+      finishPendingUpdate();
     }
   }
 
@@ -2263,6 +2333,7 @@
   loadSetlists();
   DB.getAll().then(async (list) => {
     songs = list;
+    const beforeMigration = new Map(list.map(song => [song.id, DB.snapshot(song)]));
     // 旧データ移行: sungCountのみの曲に sungDates を生成
     const migrated = [];
     songs.forEach(s => {
@@ -2287,7 +2358,7 @@
         }
       }
     });
-    if (migrated.length) await DB.bulkPut(migrated);
+    if (migrated.length) await DB.bulkPut(migrated, { expected: beforeMigration });
     render();
     const m = location.hash.match(/^#share=(.+)$/);
     if (m) {
@@ -2306,11 +2377,15 @@
   });
 
   if ("serviceWorker" in navigator) {
-    let refreshing = false;
+    let hadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.addEventListener("controllerchange", () => {
-      if (refreshing) return;
-      refreshing = true;
-      location.reload();
+      // 初回の制御開始では、既に表示済みの現行コードを再読込する必要がない。
+      if (!hadController) { hadController = true; return; }
+      pendingUpdateReload = true;
+      if (hasPendingEdit() || isSavingEdit || importingCount) {
+        toast("入力中の内容を保存または閉じた後に更新を反映します");
+      }
+      finishPendingUpdate();
     });
     navigator.serviceWorker.register("sw.js").then(registration => {
       const offerUpdate = worker => {
