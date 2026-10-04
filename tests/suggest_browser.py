@@ -73,6 +73,107 @@ class SuggestTests(restore_browser.RestoreBrowserTests):
         self.page.locator('#inputTitle').fill('該当しない曲')
         expect(self.page.locator('#suggestBox')).to_contain_text('見つかりませんでした')
 
+    def test_empty_primary_and_failed_fallback_can_retry_after_recovery(self):
+        self.apple_results = []
+        self.musicbrainz_status = 503
+        self.page.locator('#inputTitle').fill('チェリー')
+        expect(self.page.locator('#suggestBox')).to_contain_text('取得できませんでした')
+        self.apple_results = [{'trackName': 'チェリー', 'artistName': 'スピッツ'}]
+        self.page.locator('#suggestBox').get_by_role('button', name='再検索').click()
+        expect(self.page.locator('#suggestBox .suggest-item')).to_contain_text('チェリー')
+        self.assertEqual(len(self.apple_calls), 2)
+
+    def test_failed_primary_and_empty_fallback_are_not_cached_as_no_match(self):
+        self.apple_status = 503
+        self.page.locator('#inputTitle').fill('チェリー')
+        expect(self.page.locator('#suggestBox')).to_contain_text('取得できませんでした')
+        self.apple_status = 200
+        self.page.locator('#suggestBox').get_by_role('button', name='再検索').click()
+        expect(self.page.locator('#suggestBox .suggest-item')).to_contain_text('チェリー')
+
+    def test_artist_partial_failure_can_retry_after_recovery(self):
+        self.apple_results = []
+        self.musicbrainz_status = 503
+        self.page.locator('#inputArtist').fill('スピッツ')
+        expect(self.page.locator('#suggestBoxArtist')).to_contain_text('取得できませんでした')
+        self.apple_results = [{'trackName': 'チェリー', 'artistName': 'スピッツ'}]
+        self.page.locator('#suggestBoxArtist').get_by_role('button', name='再検索').click()
+        expect(self.page.locator('#suggestBoxArtist .suggest-item')).to_contain_text('スピッツ')
+
+    def test_candidates_appear_while_other_query_is_still_pending(self):
+        self.page.evaluate('''() => {
+            document.querySelector('#inputArtist').value = 'スピッツ';
+            ITunes.search = async term => {
+                if (term.startsWith('スピッツ ')) return new Promise(() => {});
+                return [{title:'チェリー', artist:'スピッツ', artworkUrl:''}];
+            };
+        }''')
+        self.page.locator('#inputTitle').fill('チェリー')
+        row = self.page.locator('#suggestBox .suggest-item')
+        expect(row).to_have_count(1, timeout=1500)
+        row.click()
+        expect(self.page.locator('#inputTitle')).to_have_value('チェリー')
+        expect(self.page.locator('#suggestBox')).to_be_hidden()
+
+    def test_empty_success_and_failed_other_query_show_retry(self):
+        self.page.evaluate('''() => {
+            document.querySelector('#inputArtist').value = 'スピッツ';
+            ITunes.search = async term => {
+                if (term.startsWith('スピッツ ')) throw new Error('offline');
+                return [];
+            };
+        }''')
+        self.page.locator('#inputTitle').fill('チェリー')
+        expect(self.page.locator('#suggestBox')).to_contain_text('取得できませんでした')
+
+    def test_empty_results_are_refetched_when_same_term_is_entered_again(self):
+        self.apple_results = []
+        self.page.locator('#inputTitle').fill('チェリー')
+        expect(self.page.locator('#suggestBox')).to_contain_text('見つかりませんでした')
+        self.apple_results = [{'trackName': 'チェリー', 'artistName': 'スピッツ'}]
+        self.page.locator('#inputTitle').fill('')
+        self.page.locator('#inputTitle').fill('チェリー')
+        expect(self.page.locator('#suggestBox .suggest-item')).to_contain_text('チェリー')
+        self.assertEqual(len(self.apple_calls), 2)
+
+    def test_artist_failed_primary_and_empty_fallback_show_retry(self):
+        self.apple_status = 503
+        self.page.locator('#inputArtist').fill('スピッツ')
+        expect(self.page.locator('#suggestBoxArtist')).to_contain_text('取得できませんでした')
+        self.apple_status = 200
+        self.page.locator('#suggestBoxArtist').get_by_role('button', name='再検索').click()
+        expect(self.page.locator('#suggestBoxArtist .suggest-item')).to_contain_text('スピッツ')
+
+    def test_selecting_early_candidate_ignores_late_query_result(self):
+        self.page.evaluate('''() => {
+            document.querySelector('#inputArtist').value = 'スピッツ';
+            ITunes.search = async term => {
+                if (term.startsWith('スピッツ ')) return new Promise(resolve => window.resolveLate = resolve);
+                return [{title:'チェリー', artist:'スピッツ', artworkUrl:''}];
+            };
+        }''')
+        self.page.locator('#inputTitle').fill('チェリー')
+        self.page.locator('#suggestBox .suggest-item').click()
+        self.page.evaluate("resolveLate([{title:'別の曲',artist:'別の歌手',artworkUrl:''}])")
+        expect(self.page.locator('#suggestBox')).to_be_hidden()
+        expect(self.page.locator('#inputTitle')).to_have_value('チェリー')
+        expect(self.page.locator('#inputArtist')).to_have_value('スピッツ')
+
+    def test_late_candidates_merge_and_prefer_requested_artist(self):
+        self.page.evaluate('''() => {
+            document.querySelector('#inputArtist').value = 'スピッツ';
+            ITunes.search = async term => {
+                if (term.startsWith('スピッツ ')) return new Promise(resolve => window.resolveLate = resolve);
+                return [{title:'チェリー', artist:'別の歌手', artworkUrl:''}];
+            };
+        }''')
+        self.page.locator('#inputTitle').fill('チェリー')
+        expect(self.page.locator('#suggestBox .suggest-item')).to_have_count(1)
+        self.page.evaluate("resolveLate([{title:'チェリー',artist:'スピッツ',artworkUrl:''}])")
+        rows = self.page.locator('#suggestBox .suggest-item')
+        expect(rows).to_have_count(2)
+        expect(rows.first).to_contain_text('スピッツ')
+
     def test_artist_error_and_retry(self):
         self.apple_status = self.musicbrainz_status = 503
         self.page.locator('#inputArtist').fill('スピッツ')
@@ -155,7 +256,7 @@ class SuggestTests(restore_browser.RestoreBrowserTests):
             window.fetch=async url=> {
                 if (url.includes('itunes.apple.com')) throw new TypeError('offline');
                 calls.push(performance.now());
-                return new Response(JSON.stringify({recordings:[],artists:[]}));
+                return new Response(JSON.stringify({recordings:[{title:'候補'}],artists:[{name:'歌手'}]}));
             };
             await Promise.all([ITunes.search('曲A'),ITunes.searchArtists('歌手B'),ITunes.search('曲C')]);
             return calls;

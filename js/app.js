@@ -1205,13 +1205,19 @@
     let results;
     try {
       if (artistTerm) {
+        results = [];
+        const collect = rows => {
+          if (!isCurrent()) return;
+          results.push(...rows);
+          // 遅い検索先を待たず、先に取得できた候補から選べるようにする。
+          if (results.length) renderTitleSuggestions(box, results, term, artistTerm);
+        };
         const searches = await Promise.allSettled([
-          ITunes.search(artistTerm + " " + term, 8, options),
-          ITunes.search(term, 8, options),
+          ITunes.search(artistTerm + " " + term, 8, options).then(collect),
+          ITunes.search(term, 8, options).then(collect),
         ]);
-        const successful = searches.filter(result => result.status === "fulfilled");
-        if (!successful.length) throw searches[0].reason;
-        results = successful.flatMap(result => result.value);
+        const failed = searches.find(result => result.status === "rejected");
+        if (!results.length && failed) throw failed.reason;
       } else {
         results = await ITunes.search(term, 8, options);
       }
@@ -1225,6 +1231,10 @@
       if (isCurrent()) box.setAttribute("aria-busy", "false");
     }
     if (!isCurrent()) return;
+    renderTitleSuggestions(box, results, term, artistTerm);
+  }
+
+  function renderTitleSuggestions(box, results, term, artistTerm) {
     // 曲名一致を優先。表記揺れや「歌手名 曲名」の入力でもAPIの候補を捨てない。
     const nt = normSearch(term);
     const matched = results.filter(r => normSearch(r.title).includes(nt));

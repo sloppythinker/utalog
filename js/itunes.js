@@ -50,7 +50,8 @@ const ITunes = (() => {
     const hit = cache.get(key);
     if (hit && Date.now() - hit.at < CACHE_TTL) return hit.value;
     const value = await loader();
-    cache.set(key, { at: Date.now(), value });
+    // 空の候補は保存しない。通信回復後の同じ入力でも必ず検索し直す。
+    if (value.length) cache.set(key, { at: Date.now(), value });
     if (cache.size > 50) cache.delete(cache.keys().next().value);
     return value;
   }
@@ -98,10 +99,11 @@ const ITunes = (() => {
           seen.add(k);
           out.push({ title, artist, artworkUrl: "" });
         }
+        if (!out.length && !responded) throw new Error("主検索が失敗しています");
         return out;
       } catch (e) {
         checkAbort(options.signal);
-        if (responded) return [];
+        // 片方だけの空応答では「該当なし」と断定できない。再検索を可能にする。
         throw new Error("候補を取得できませんでした。通信状態を確認して再検索してください。");
       }
     });
@@ -134,13 +136,14 @@ const ITunes = (() => {
         const data = await musicBrainzJson("https://musicbrainz.org/ws/2/artist?" +
           new URLSearchParams({ query: term, fmt: "json", limit: String(limit) }), options.signal);
         if (!Array.isArray(data.artists)) throw new Error("検索結果の形式が不正です");
-        return (data.artists || []).map(a => ({
+        const out = (data.artists || []).map(a => ({
           name: a.name || "",
           artworkUrl: "",
         })).filter(a => a.name);
+        if (!out.length && !responded) throw new Error("主検索が失敗しています");
+        return out;
       } catch (e) {
         checkAbort(options.signal);
-        if (responded) return [];
         throw new Error("候補を取得できませんでした。通信状態を確認して再検索してください。");
       }
     });
