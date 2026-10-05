@@ -466,7 +466,7 @@ html, body {
   -webkit-overflow-scrolling: touch;
 }
 
-.suggest-item {
+.suggest-item, .suggest-song-item {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -474,8 +474,8 @@ html, body {
   cursor: pointer;
   border-bottom: 1px solid var(--border);
 }
-.suggest-item:last-child { border-bottom: none; }
-.suggest-item:active { background: var(--bg-elev); }
+.suggest-item:last-child, .suggest-song-item:last-child { border-bottom: none; }
+.suggest-item:active, .suggest-song-item:active { background: var(--bg-elev); }
 
 .suggest-art {
   width: 38px;
