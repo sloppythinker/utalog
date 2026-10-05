@@ -96,15 +96,94 @@
 
   // アートワーク読込失敗時は音符プレースホルダーへ差し替える（errorはバブルしないためcapture）
   const ART_CLASSES = ["song-art", "history-art", "roulette-art", "suggest-art"];
+  const artworkQueue = [];
+  const artworkAttempts = new Set();
+  let artworkActive = 0;
+  const artworkObserver = new IntersectionObserver(entries => entries.forEach(entry => {
+    if (!entry.isIntersecting) return;
+    artworkObserver.unobserve(entry.target);
+    const song = songs.find(song => song.id === entry.target.dataset.artworkId);
+    if (song) queueArtwork(song);
+  }), { rootMargin: "100px" });
+
+  function artworkHtml(cls, url, id = "", urls = []) {
+    const data = id ? ` data-artwork-id="${esc(id)}"` : "";
+    return url
+      ? `<img class="${cls}" src="${esc(url)}" alt="" loading="lazy"${data} data-artwork-fallbacks="${esc(JSON.stringify(urls.filter(item => item !== url)))}">`
+      : `<div class="${cls} placeholder"${data}>🎵</div>`;
+  }
+
+  function watchArtwork(root) {
+    root.querySelectorAll(".placeholder[data-artwork-id]").forEach(node => artworkObserver.observe(node));
+  }
+
+  function queueArtwork(song) {
+    if (navigator.onLine === false) return;
+    const key = JSON.stringify([song.id, song.title, song.artist]);
+    if (artworkAttempts.has(key)) return;
+    artworkAttempts.add(key);
+    artworkQueue.push({ ...song });
+    runArtworkQueue();
+  }
+
+  function runArtworkQueue() {
+    while (artworkActive < 2 && artworkQueue.length) {
+      const original = artworkQueue.shift();
+      artworkActive++;
+      ITunes.songImage(original.title, original.artist, { excludeUrl: original.artworkUrl }).then(async url => {
+        if (!url) return;
+        const change = await DB.updateArtwork(original, url);
+        if (!change) return;
+        const current = songs.find(song => song.id === original.id);
+        if (!current) return;
+        Object.assign(current, change.after);
+        // 画像だけの自動補完は、既に開いている編集画面の保存競合にしない。
+        if (editingId === current.id && editOriginalSong === DB.snapshot(change.before)) {
+          editOriginalSong = DB.snapshot(change.after);
+          const initial = JSON.parse(editInitialSnapshot);
+          initial.artworkUrl = url;
+          editInitialSnapshot = JSON.stringify(initial);
+          if ((editArtworkUrl || "") === (change.before.artworkUrl || "") &&
+              normSearch($("inputTitle").value) === normSearch(current.title) &&
+              normSearch($("inputArtist").value) === normSearch(current.artist)) editArtworkUrl = url;
+        }
+        document.querySelectorAll("[data-artwork-id]").forEach(node => {
+          if (node.dataset.artworkId !== current.id) return;
+          const cls = ART_CLASSES.find(cls => node.classList.contains(cls));
+          if (!cls) return;
+          const wrapper = document.createElement("div");
+          wrapper.innerHTML = artworkHtml(cls, url, current.id);
+          node.replaceWith(wrapper.firstChild);
+        });
+      }).catch(error => diagnostic("artwork-failed", error && error.name)).finally(() => {
+        artworkActive--;
+        runArtworkQueue();
+      });
+    }
+  }
+
+  window.addEventListener("online", () => {
+    artworkAttempts.clear();
+    watchArtwork(document);
+  });
+
   document.addEventListener("error", (e) => {
     const img = e.target;
     if (!img || img.tagName !== "IMG") return;
     const cls = ART_CLASSES.find(c => img.classList.contains(c));
     if (!cls) return;
+    const fallbacks = JSON.parse(img.dataset.artworkFallbacks || "[]");
+    if (fallbacks.length) {
+      img.dataset.artworkFallbacks = JSON.stringify(fallbacks.slice(1));
+      img.src = fallbacks[0];
+      return;
+    }
     const ph = document.createElement("div");
     ph.className = `${cls} placeholder`;
     ph.textContent = "🎵";
+    if (img.dataset.artworkId) ph.dataset.artworkId = img.dataset.artworkId;
     img.replaceWith(ph);
+    if (ph.dataset.artworkId) artworkObserver.observe(ph);
   }, true);
 
   let toastTimer = null;
@@ -559,9 +638,7 @@
         if (!song) return;
         const row = document.createElement("div");
         row.className = "history-row";
-        const art = song.artworkUrl
-          ? `<img class="history-art" src="${esc(song.artworkUrl)}" alt="" loading="lazy">`
-          : `<div class="history-art placeholder">🎵</div>`;
+        const art = artworkHtml("history-art", song.artworkUrl, song.id);
         row.innerHTML = `
           ${art}
           <div class="history-info">
@@ -571,6 +648,7 @@
           <span class="key-badge">キー ${keyLabel(song.key)}</span>`;
         row.onclick = () => openEdit(song.id);
         box.appendChild(row);
+        watchArtwork(row);
       });
     });
     if (events.length > visibleEvents.length) {
@@ -688,9 +766,7 @@
       const card = document.createElement("div");
       card.className = "song-card";
       card.dataset.kana = kanaRowOf(sortMode === "artist" ? song.artist : song.title);
-      const art = song.artworkUrl
-        ? `<img class="song-art" src="${esc(song.artworkUrl)}" alt="" loading="lazy">`
-        : `<div class="song-art placeholder">🎵</div>`;
+      const art = artworkHtml("song-art", song.artworkUrl, song.id);
       const stars = song.rating ? `<span class="rating-badge">${"★".repeat(song.rating)}</span>` : "";
       const best = bestScore(song);
       const scoreB = best !== null ? `<span class="score-badge">🏆${best}</span>` : "";
@@ -742,6 +818,7 @@
       fragment.appendChild(card);
     });
     box.appendChild(fragment);
+    watchArtwork(box);
     if (allMatches.length > list.length) {
       const more = document.createElement("button");
       more.type = "button";
@@ -912,17 +989,7 @@
       toast(wasEditing ? "更新しました" : `「${title}」を追加しました`);
       editingId = null;
       // 画像は保存操作を待たせず、取得できた場合だけ後から追記する。
-      if (shouldFetchArtwork) {
-        ITunes.artistImage(artistName).then(async artworkUrl => {
-          if (!artworkUrl) return;
-          const current = songs.find(item => item.id === song.id);
-          if (!current || current.artworkUrl || current.artist !== artistName) return;
-          const updated = { ...current, artworkUrl, updatedAt: Date.now() };
-          await DB.put(updated, { expected: DB.snapshot(current) });
-          Object.assign(current, updated);
-          renderList();
-        }).catch(error => diagnostic("artwork-failed", error && error.name));
-      }
+      if (shouldFetchArtwork) queueArtwork(song);
       return song;
     } catch (e) {
       reportError("曲の保存", e);
@@ -1307,33 +1374,39 @@
         Number(normSearch(b.artist).includes(na)) - Number(normSearch(a.artist).includes(na)));
     }
     // 同じ曲名+歌手名の重複を除去
-    const seen = new Set();
-    results = results.filter(r => {
+    const unique = new Map();
+    results.forEach(r => {
       const k = normSearch(r.title) + "\n" + normSearch(r.artist);
-      return seen.has(k) ? false : (seen.add(k), true);
-    }).slice(0, 8);
+      const previous = unique.get(k);
+      if (!previous || (!previous.artworkUrl && r.artworkUrl)) unique.set(k, r);
+    });
+    results = [...unique.values()].slice(0, 8);
     if (results.length === 0) {
       suggestStatus(box, "候補が見つかりませんでした。曲名を変えるか、そのまま手入力してください。");
       return;
     }
-    const rows = results.map(r => {
-      const item = document.createElement("div");
-      item.className = "suggest-item";
-      item.innerHTML = `
-        <img class="suggest-art" src="${esc(r.artworkUrl)}" alt="" loading="lazy">
-        <div class="suggest-text">
-          <div class="suggest-title">${esc(r.title)}</div>
-          <div class="suggest-artist">${esc(r.artist)}</div>
-        </div>`;
-      item.onclick = () => {
-        $("inputTitle").value = r.title;
-        $("inputArtist").value = r.artist;
-        editArtworkUrl = r.artworkUrl;
-        hideSuggest();
-      };
-      return item;
-    });
+    const rows = results.map(r => songSuggestion(r));
     buildSuggestBox(box, rows, matched.length ? "曲名の候補（そのまま手入力もOK）" : "入力に関連する候補（曲名・歌手名を確認してください）");
+  }
+
+  function songSuggestion(r, cls = "suggest-item") {
+    const item = document.createElement("div");
+    item.className = cls;
+    item.innerHTML = `
+      ${artworkHtml("suggest-art", r.artworkUrl, "", r.artworkUrls)}
+      <div class="suggest-text">
+        <div class="suggest-title">${esc(r.title)}</div>
+        <div class="suggest-artist">${esc(r.artist)}</div>
+      </div>`;
+    item.onclick = () => {
+      $("inputTitle").value = r.title;
+      $("inputArtist").value = r.artist;
+      const sameSong = editingId && songs.find(song => song.id === editingId &&
+        normSearch(song.title) === normSearch(r.title) && normSearch(song.artist) === normSearch(r.artist));
+      editArtworkUrl = item.querySelector("img")?.getAttribute("src") || (sameSong ? sameSong.artworkUrl : "") || "";
+      hideSuggest();
+    };
+    return item;
   }
 
   async function showArtistSuggest(term) {
@@ -1349,9 +1422,40 @@
     }
     suggestStatus(box, "歌手名の候補を検索中…");
     box.setAttribute("aria-busy", "true");
-    let results;
+    let artists = [], tracks = [];
+    const display = () => {
+      if (!isCurrent()) return;
+      const nt = normSearch(term);
+      const matched = artists.filter(a => normSearch(a.name).includes(nt));
+      const results = (matched.length ? matched : artists).slice(0, 6);
+      const rows = results.map(a => {
+        const track = tracks.find(track => normSearch(track.artist) === normSearch(a.name));
+        const artworkUrl = a.artworkUrl || (track && track.artworkUrl) || "";
+        const item = document.createElement("div");
+        item.className = "suggest-item";
+        item.innerHTML = `${artworkHtml("suggest-art", artworkUrl, "", track && track.artworkUrls)}
+          <div class="suggest-text"><div class="suggest-title">${esc(a.name)}</div></div>`;
+        item.onclick = () => {
+          $("inputArtist").value = a.name;
+          if (!editArtworkUrl && artworkUrl) editArtworkUrl = item.querySelector("img")?.getAttribute("src") || "";
+          dismissSuggest("suggestBox");
+          showArtistSuggest(a.name);
+        };
+        return item;
+      });
+      rows.push(...tracks.slice(0, 8).map(track => songSuggestion(track, "suggest-song-item")));
+      if (rows.length) buildSuggestBox(box, rows, tracks.length ? "歌手名、または曲を選べます" : "歌手名の候補");
+    };
     try {
-      results = await ITunes.searchArtists(term, 6, { signal });
+      const searches = await Promise.allSettled([
+        ITunes.searchArtists(term, 6, { signal }).then(rows => { artists = rows; display(); }),
+        ITunes.searchByArtist(term, 8, { signal }).then(rows => { tracks = rows; display(); }),
+      ]);
+      if (!artists.length && !tracks.length) {
+        const failed = searches.find(result => result.status === "rejected");
+        if (failed) throw failed.reason;
+        if (isCurrent()) suggestStatus(box, "候補が見つかりませんでした。歌手名を変えるか、そのまま手入力してください。");
+      }
     } catch (error) {
       if (isCurrent()) {
         diagnostic("artist-suggest-failed", error && error.name);
@@ -1361,32 +1465,6 @@
     } finally {
       if (isCurrent()) box.setAttribute("aria-busy", "false");
     }
-    if (!isCurrent()) return;
-    // 歌手名にマッチするものを優先（マッチゼロなら上位候補をそのまま表示）
-    const nt = normSearch(term);
-    const matched = results.filter(a => normSearch(a.name).includes(nt));
-    if (matched.length) results = matched;
-    results = results.slice(0, 6);
-    if (results.length === 0) {
-      suggestStatus(box, "候補が見つかりませんでした。歌手名を変えるか、そのまま手入力してください。");
-      return;
-    }
-    const rows = results.map(a => {
-      const item = document.createElement("div");
-      item.className = "suggest-item";
-      item.innerHTML = `
-        <img class="suggest-art" src="${esc(a.artworkUrl)}" alt="" loading="lazy">
-        <div class="suggest-text">
-          <div class="suggest-title">${esc(a.name)}</div>
-        </div>`;
-      item.onclick = () => {
-        $("inputArtist").value = a.name;
-        if (!editArtworkUrl && a.artworkUrl) editArtworkUrl = a.artworkUrl;
-        hideSuggest();
-      };
-      return item;
-    });
-    buildSuggestBox(box, rows, "歌手名の候補");
   }
 
   // ---------- 統計 ----------
@@ -1472,15 +1550,14 @@
 
   function renderRoulettePick(song, settled) {
     const box = $("rouletteResult");
-    const art = song.artworkUrl
-      ? `<img class="roulette-art" src="${esc(song.artworkUrl)}" alt="">`
-      : `<div class="roulette-art placeholder">🎵</div>`;
+    const art = artworkHtml("roulette-art", song.artworkUrl, song.id);
     box.innerHTML = `
       ${art}
       <div class="roulette-title">${esc(song.title)}</div>
       <div class="roulette-artist">${esc(song.artist) || "&nbsp;"}</div>
       <div class="roulette-meta"><span class="key-badge">キー ${keyLabel(song.key)}</span>${song.rating ? `<span class="rating-badge">${"★".repeat(song.rating)}</span>` : ""}</div>`;
     box.classList.toggle("settled", settled);
+    if (settled) watchArtwork(box);
     if (settled) {
       box.onclick = () => {
         $("rouletteModal").classList.add("hidden");

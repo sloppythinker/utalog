@@ -154,10 +154,26 @@ const DB = (() => {
     return tx("readwrite", store => { ids.forEach(id => store.delete(id)); return ids.length; });
   }
 
+  function updateArtwork(original, artworkUrl) {
+    return tx("readwrite", (store, abort) => {
+      const change = {};
+      const request = store.get(original.id);
+      request.onsuccess = () => {
+        const current = request.result;
+        if (!current || current.title !== original.title || current.artist !== original.artist ||
+            (current.artworkUrl || "") !== (original.artworkUrl || "")) return;
+        change.before = current;
+        change.after = { ...current, artworkUrl, updatedAt: Date.now() };
+        try { store.put(change.after); } catch (error) { abort(error); }
+      };
+      return change;
+    }).then(change => change.after ? change : null);
+  }
+
   function newId() {
     return (crypto.randomUUID && crypto.randomUUID()) ||
       Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
   }
 
-  return { getAll, put, bulkPut, remove, bulkRemove, newId, snapshot };
+  return { getAll, put, bulkPut, remove, bulkRemove, updateArtwork, newId, snapshot };
 })();
