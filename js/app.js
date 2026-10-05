@@ -1429,13 +1429,15 @@
       const matched = artists.filter(a => normSearch(a.name).includes(nt));
       const results = (matched.length ? matched : artists).slice(0, 6);
       const rows = results.map(a => {
+        const track = tracks.find(track => normSearch(track.artist) === normSearch(a.name));
+        const artworkUrl = a.artworkUrl || (track && track.artworkUrl) || "";
         const item = document.createElement("div");
         item.className = "suggest-item";
-        item.innerHTML = `${artworkHtml("suggest-art", a.artworkUrl)}
+        item.innerHTML = `${artworkHtml("suggest-art", artworkUrl, "", track && track.artworkUrls)}
           <div class="suggest-text"><div class="suggest-title">${esc(a.name)}</div></div>`;
         item.onclick = () => {
           $("inputArtist").value = a.name;
-          if (!editArtworkUrl && a.artworkUrl) editArtworkUrl = a.artworkUrl;
+          if (!editArtworkUrl && artworkUrl) editArtworkUrl = item.querySelector("img")?.getAttribute("src") || "";
           dismissSuggest("suggestBox");
           showArtistSuggest(a.name);
         };

@@ -207,6 +207,12 @@ class ArtworkTests(restore_browser.RestoreBrowserTests):
         expect(rows).to_contain_text('スピッツ')
         self.assertTrue(any(call.get('query')==['artist:"スピッツ"'] for call in self.musicbrainz_calls))
 
+    def test_artist_name_candidate_uses_available_song_cover_in_fallback(self):
+        self.open_add()
+        self.page.locator('#inputArtist').fill('スピッツ')
+        self.wait_image('#suggestBoxArtist .suggest-item img')
+        expect(self.page.locator('#suggestBoxArtist .suggest-item img')).to_have_attribute('src',COVER)
+
     def test_artist_name_in_title_field_searches_artist_in_fallback(self):
         self.open_add()
         self.page.locator('#inputTitle').fill('スピッツ')
